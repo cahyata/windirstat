@@ -33,6 +33,7 @@ protected:
         ~CListItem() override = default;
 
         bool DrawSubItem(int subitem, CDC* pdc, CRect rc, UINT state, int* width, int* focusLeft) override;
+        void GetGlassCell(int subitem, GlassCell& cell) override;
         std::wstring GetText(int subitem) const override;
 
         const std::wstring& GetExtension() const { return m_extension; }
@@ -62,6 +63,7 @@ protected:
 
 public:
     CExtensionListControl(CExtensionView* extensionView);
+    bool GlassRenderable() const override { return true; }
     bool GetAscendingDefault(int subitem) override;
     void Initialize();
     void SetExtensionData(const CExtensionData* ed);

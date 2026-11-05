@@ -5,6 +5,7 @@
 // Distributed WITHOUT ANY WARRANTY; see LICENSE.md for details.
 
 #include "pch.h"
+#include "GlassOverlay.h"
 #include "VisualizationPane.h"
 #include "FileTabbedView.h"
 #include "FileTreeView.h"
@@ -28,16 +29,7 @@ CSettingsSheet::CSettingsSheet()
 
 bool CSettingsSheet::OnEraseBkgnd(CDC* pDC) const
 {
-    if (!DarkMode::IsDarkModeActive())
-    {
-        return CPropertySheet::OnEraseBkgnd(pDC);
-    }
-
-    // Paint the background with dark mode color
-    const CRect rect = GetClientRect();
-    pDC->FillSolidRect(rect, DarkMode::SystemColor(COLOR_WINDOW));
-
-    return true;
+    return CPropertySheet::OnEraseBkgnd(pDC);
 }
 
 bool CSettingsSheet::OnInitDialog()
@@ -477,6 +469,22 @@ void CMainFrame::SetStatusPaneText(const CDC& cdc, const CStatusBar::PaneId pane
     m_wndStatusBar.SetPaneText(pane, text, std::max(static_cast<int>(cx), ScaleForDpi(minWidth)));
 }
 
+// Liquid-glass look: translucent acrylic backdrop with rounded corners (Windows 11 22H2+)
+static bool ApplyGlassBackdrop(const HWND hWnd)
+{
+    OSVERSIONINFOEXW info{ .dwOSVersionInfoSize = sizeof(info) };
+    using RtlGetVersionFn = LONG(WINAPI*)(PRTL_OSVERSIONINFOW);
+    const auto rtlGetVersion = reinterpret_cast<RtlGetVersionFn>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion"));
+    if (rtlGetVersion == nullptr || rtlGetVersion(reinterpret_cast<PRTL_OSVERSIONINFOW>(&info)) != 0 ||
+        info.dwBuildNumber < 22621) return false;
+
+    const DWM_SYSTEMBACKDROP_TYPE backdrop = DWMSBT_NONE; // caption colour is set explicitly
+    const DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
+    DwmSetWindowAttribute(hWnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
+    return SUCCEEDED(DwmSetWindowAttribute(hWnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop)));
+}
+
 int CMainFrame::OnCreate(const LPCREATESTRUCT lpCreateStruct)
 {
     if (CFrameWnd::OnCreate(lpCreateStruct) == -1)
@@ -506,6 +514,127 @@ int CMainFrame::OnCreate(const LPCREATESTRUCT lpCreateStruct)
 
     // apply dark mode to main frame window
     DarkMode::AdjustControls(Handle());
+
+    m_glassActive = ApplyGlassBackdrop(Handle());
+    SetLayoutMargin(ScaleForDpi(10));
+    GlassTheme::StyleMainFrame(Handle());
+
+    // GPU liquid-glass layer over the toolbar and status bar panes
+    GlassOverlay::Attach(Handle(), [this]
+    {
+        GlassLayer layer;
+        auto& regions = layer.regions;
+        const auto add = [&](const HWND child, RECT rc, const int dx, const int dy, const float radius)
+        {
+            rc.left += dx; rc.right -= dx; rc.top += dy; rc.bottom -= dy;
+            if (rc.right <= rc.left || rc.bottom <= rc.top) return;
+            MapWindowPoints(child, Handle(), reinterpret_cast<POINT*>(&rc), 2);
+            regions.push_back({ rc, radius });
+        };
+        if (const HWND bar = m_wndToolBar.Handle(); ::IsWindow(bar) && ::IsWindowVisible(bar))
+        {
+            RECT rc{};
+            ::GetClientRect(bar, &rc);
+            add(bar, rc, 1, 1, static_cast<float>(rc.bottom - rc.top) * 0.5f);
+
+            // Glass lens on the toolbar button under the cursor
+            const LRESULT hot = ::SendMessageW(bar, TB_GETHOTITEM, 0, 0);
+            if (hot >= 0)
+            {
+                RECT button{};
+                if (::SendMessageW(bar, TB_GETITEMRECT, static_cast<WPARAM>(hot), reinterpret_cast<LPARAM>(&button)))
+                {
+                    // Lens hugs the icon: a centred square a little larger than the glyph
+                    const int side = std::min<int>(button.right - button.left, button.bottom - button.top) - ScaleForDpi(2);
+                    const int cx = (button.left + button.right) / 2, cy = (button.top + button.bottom) / 2;
+                    const RECT lens{ cx - side / 2, cy - side / 2, cx + side / 2, cy + side / 2 };
+                    add(bar, lens, 0, 0, 8.0f);
+                }
+            }
+
+            // Glyph-only buttons are drawn by the overlay (the classic toolbar skips them)
+            const int count = static_cast<int>(::SendMessageW(bar, TB_BUTTONCOUNT, 0, 0));
+            for (int i = 0; i < count; ++i)
+            {
+                TBBUTTON b{};
+                if (!::SendMessageW(bar, TB_GETBUTTON, static_cast<WPARAM>(i), reinterpret_cast<LPARAM>(&b))) continue;
+                if ((b.fsStyle & BTNS_SEP) || (b.fsState & TBSTATE_HIDDEN) || b.iBitmap == I_IMAGENONE || b.idCommand == 0) continue;
+                RECT r{};
+                if (!::SendMessageW(bar, TB_GETITEMRECT, static_cast<WPARAM>(i), reinterpret_cast<LPARAM>(&r))) continue;
+                if (r.right > rc.right || r.left < 0) continue; // clipped
+                MapWindowPoints(bar, Handle(), reinterpret_cast<POINT*>(&r), 2);
+                const bool enabled = (b.fsState & TBSTATE_ENABLED) != 0;
+                layer.icons.push_back({ r, m_wndToolBar.GetImageList(!enabled), b.iBitmap, b.idCommand,
+                    enabled && hot == i, enabled && (b.fsState & TBSTATE_PRESSED) != 0, (b.fsState & TBSTATE_CHECKED) != 0 });
+            }
+        }
+        // Glass finish on list rows (the classic list still draws, owns input and keeps its capsule fill)
+        {
+            POINT cursor{};
+            ::GetCursorPos(&cursor);
+            for (CWdsListControl* list : CWdsListControl::Live())
+            {
+                const HWND hwnd = list->Handle();
+                if (!::IsWindow(hwnd) || !::IsWindowVisible(hwnd) || !::IsChild(Handle(), hwnd) || !list->IsFullRowSelection()) continue;
+                if (list->GlassRenderable())
+                {
+                    // The compositor paints this list completely
+                    std::shared_ptr<const GlassListView> view;
+                    if (list->BuildGlassView(Handle(), view)) layer.lists.push_back(std::move(view));
+                    continue;
+                }
+                RECT client{};
+                ::GetClientRect(hwnd, &client);
+                if (const HWND header = ListView_GetHeader(hwnd); header != nullptr && ::IsWindowVisible(header))
+                {
+                    RECT hr{};
+                    ::GetWindowRect(header, &hr);
+                    ::MapWindowPoints(nullptr, hwnd, reinterpret_cast<POINT*>(&hr), 2);
+                    client.top = std::max(client.top, hr.bottom);
+                }
+                RECT clip = client;
+                ::MapWindowPoints(hwnd, Handle(), reinterpret_cast<POINT*>(&clip), 2);
+                POINT local = cursor;
+                ::ScreenToClient(hwnd, &local);
+                const bool focused = ::GetFocus() == hwnd;
+                const int count = ListView_GetItemCount(hwnd);
+                const int first = ListView_GetTopIndex(hwnd);
+                const int last = std::min(count, first + ListView_GetCountPerPage(hwnd) + 2);
+                for (int i = first; i < last; ++i)
+                {
+                    RECT row{};
+                    if (!ListView_GetItemRect(hwnd, i, &row, LVIR_BOUNDS) || row.bottom <= client.top || row.top >= client.bottom) continue;
+                    RECT capsule{ row.left + 5, row.top + 2, std::min<int>(row.right, client.right) - 5, row.bottom - 2 };
+                    if (capsule.right - capsule.left < 40) continue;
+                    const bool inside = local.x >= client.left && local.x < client.right && local.y >= row.top && local.y < row.bottom &&
+                        local.y >= client.top && ::WindowFromPoint(cursor) == hwnd;
+                    ::MapWindowPoints(hwnd, Handle(), reinterpret_cast<POINT*>(&capsule), 2);
+                    layer.rows.push_back({ capsule, clip, static_cast<float>(capsule.bottom - capsule.top) * 0.5f + 1.0f,
+                        static_cast<int>(0x40000000 | ((reinterpret_cast<uintptr_t>(hwnd) & 0xFFF) << 16) | (i & 0xFFFF)),
+                        (ListView_GetItemState(hwnd, i, LVIS_SELECTED) & LVIS_SELECTED) != 0, inside, focused });
+                }
+            }
+        }
+        if (const HWND bar = m_wndStatusBar.Handle(); ::IsWindow(bar) && ::IsWindowVisible(bar))
+        {
+            LOGFONT font{};
+            ::GetObjectW(GetAppFont(bar), sizeof(font), &font);
+            const int fontPx = std::max(8, std::abs(static_cast<int>(font.lfHeight)));
+            for (const auto pane : { CStatusBar::PaneId::Idle, CStatusBar::PaneId::Size, CStatusBar::PaneId::Ram })
+            {
+                const CRect pr = m_wndStatusBar.GetPaneRect(pane);
+                if (pr.Width() > 20) add(bar, pr, 2, 2, 9.0f);
+
+                CRect text = pr;
+                text.Deflate(2 + 4, 2, 2 + 4, 2);
+                if (text.Width() <= 0 || text.Height() <= 0) continue;
+                RECT tr = text;
+                MapWindowPoints(bar, Handle(), reinterpret_cast<POINT*>(&tr), 2);
+                layer.texts.push_back({ tr, m_wndStatusBar.GetPaneText(pane), DarkMode::SystemColor(COLOR_BTNTEXT), fontPx });
+            }
+        }
+        return layer;
+    });
 
     OnAppearanceChanged();
 
@@ -834,7 +963,6 @@ void CMainFrame::OnAppearanceChanged()
 
 bool CMainFrame::OnEraseBkgnd(CDC* dc)
 {
-    dc->FillSolidRect(GetClientRect(), DarkMode::Color(DarkMode::IsDarkModeActive() ?
-        DarkMode::ColorRole::Window : DarkMode::ColorRole::Control));
+    GlassTheme::PaintBackdrop(dc->Handle(), Handle());
     return true;
 }

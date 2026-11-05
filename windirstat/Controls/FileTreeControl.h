@@ -15,6 +15,7 @@ public:
     ~CFileTreeControl() override { m_singleton = nullptr; }
     bool CreateExtended(DWORD dwExStyle, DWORD dwStyle, const RECT& rect, CWnd* pParentWnd, UINT nID) override;
     bool GetAscendingDefault(int column) override;
+    bool GlassRenderable() const override { return true; }
     static CFileTreeControl* Get() { return m_singleton; }
 
 protected:

@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|ARM64">
@@ -268,6 +268,8 @@ POWERSHELL.EXE -NoLogo -ExecutionPolicy Unrestricted -NoProfile -File "$(Project
     <ClCompile Include="Controls\XYSlider.cpp" />
     <ClCompile Include="CsvLoader.cpp" />
     <ClCompile Include="DarkMode.cpp" />
+    <ClCompile Include="GlassOverlay.cpp" />
+    <ClCompile Include="GlassUi.cpp" />
     <ClCompile Include="UiAppearance.cpp" />
     <ClCompile Include="UiControls.cpp" />
     <ClCompile Include="UiDialogs.cpp" />

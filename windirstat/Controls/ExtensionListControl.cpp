@@ -25,6 +25,22 @@ CExtensionListControl::CListItem::CListItem(CExtensionListControl* list, std::ws
     if (aggregate) m_description = Localization::Lookup(IDS_EXTENSION_GROUPED);
 }
 
+void CExtensionListControl::CListItem::GetGlassCell(const int subitem, GlassCell& cell)
+{
+    CWdsListItem::GetGlassCell(subitem, cell);
+    if (subitem == COL_EXT_EXTENSION)
+    {
+        cell.kind = GlassCell::Kind::Label;
+        cell.icon = GetIcon();
+    }
+    else if (subitem == COL_EXT_COLOR)
+    {
+        cell.kind = GlassCell::Kind::Swatch;
+        cell.text.clear();
+        cell.color = m_color;
+    }
+}
+
 bool CExtensionListControl::CListItem::DrawSubItem(const int subitem, CDC* pdc, CRect rc, const UINT state, int* width, int* focusLeft)
 {
     switch (subitem)
@@ -57,8 +73,17 @@ void CExtensionListControl::CListItem::DrawColor(CDC* pdc, CRect rc, const UINT 
         return;
     }
 
+    // Rounded colour swatch
+    const HDC dc = pdc->Handle();
+    const int saved = SaveDC(dc);
+    if (const HRGN region = CreateRoundRectRgn(rc.left, rc.top, rc.right + 1, rc.bottom + 1, 10, 10); region != nullptr)
+    {
+        SelectClipRgn(dc, region);
+        DeleteObject(region);
+    }
     CTreeMap treemap;
-    treemap.DrawColorPreview(pdc->Handle(), rc, m_color, &COptions::TreeMapOptions);
+    treemap.DrawColorPreview(dc, rc, m_color, &COptions::TreeMapOptions);
+    RestoreDC(dc, saved);
 }
 
 std::wstring CExtensionListControl::CListItem::GetText(const int subitem) const

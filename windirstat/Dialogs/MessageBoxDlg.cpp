@@ -5,6 +5,7 @@
 // Distributed WITHOUT ANY WARRANTY; see LICENSE.md for details.
 
 #include "pch.h"
+#include "../GlassUi.h"
 
 CMessageBoxDlg::CMessageBoxDlg(const std::wstring& message, const std::wstring& title, const UINT type, WindowRef pParent,
     const std::vector<std::wstring>& listViewItems, const std::wstring& checkBoxText, const bool checkBoxValue)
@@ -359,82 +360,59 @@ void CMessageBoxDlg::OnButtonRight()
 
 INT_PTR CMessageBoxDlg::ShowModal()
 {
+    // Direct2D glass message box; falls back to the classic dialog when GPU composition is unavailable
+    std::vector<GlassUi::MessageButton> buttons;
+    const auto addButton = [&](const BYTE id, const std::wstring_view name, const CButton* button)
+    {
+        if (id != 0) buttons.push_back({ id, Localization::Lookup(name), m_buttonContext.btnFocus == button });
+    };
+    addButton(m_buttonContext.btnLeftID, m_buttonContext.btnLeftIDS, &m_buttonLeft);
+    addButton(m_buttonContext.btnMidID, m_buttonContext.btnMidIDS, &m_buttonMiddle);
+    addButton(m_buttonContext.btnRightID, m_buttonContext.btnRightIDS, &m_buttonRight);
+    int kind = 0;
+    if (m_iconName == IDI_QUESTION) kind = 1;
+    else if (m_iconName == IDI_WARNING) kind = 2;
+    else if (m_iconName == IDI_ERROR) kind = 3;
+    int result = IDCANCEL;
+    if (GlassUi::ShowMessage(GetDialogOwner(m_parent), m_title, m_message, kind, buttons, m_listViewItems,
+        m_checkboxText, m_checkboxChecked, result)) return result;
+
     return CLayoutDialog::ShowModal();
 }
 
 HBRUSH CMessageBoxDlg::OnCtlColor(CDC* pDC, WindowRef pWnd, const UINT nCtlColor)
 {
-    // Let DarkMode handle setting the colors first
-    const HBRUSH brush = CLayoutDialog::OnCtlColor(pDC, pWnd, nCtlColor);
-
-    // Set checkbox background to match dialog background in dark mode
-    if (const int nID = pWnd.GetDlgCtrlID(); nID == IDC_MESSAGE_CHECKBOX)
-    {
-        pDC->SetBkColor(DarkMode::SystemColor(COLOR_BTNFACE));
-        pDC->SetDCBrushColor(pDC->GetBkColor());
-        return static_cast<HBRUSH>(GetStockObject(DC_BRUSH));
-    }
-
-    // Set icon and message text backgrounds to white in light mode
-    else if (!DarkMode::IsDarkModeActive() && (nID == IDC_MESSAGE_ICON || nID == IDC_MESSAGE_TEXT))
-    {
-        pDC->SetBkColor(GetSysColor(COLOR_WINDOW));
-        return static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH));
-    }
-
-    return brush;
+    // Labels, icon and checkbox all sit on the glass backdrop (handled by the base dialog)
+    return CLayoutDialog::OnCtlColor(pDC, pWnd, nCtlColor);
 }
 
 bool CMessageBoxDlg::OnEraseBkgnd(CDC* pDC) const
 {
     const CRect rect = GetClientRect();
-
-    const COLORREF topColor = DarkMode::SystemColor(COLOR_WINDOW);
-    const COLORREF footerColor = DarkMode::SystemColor(COLOR_BTNFACE);
-    const COLORREF lineColor = DarkMode::IsDarkModeActive()
-        ? DarkMode::SystemColor(COLOR_BTNHIGHLIGHT) : GetSysColor(COLOR_3DSHADOW);
+    GlassTheme::PaintBackdrop(pDC->Handle(), m_hWnd);
 
     int lineY = rect.bottom - ScaleForDpi(46);
-
     if (m_buttonRight.Handle())
     {
         const CRect btnRect = GetChildWindowRect(m_buttonRight.Handle());
         lineY = btnRect.top - ScaleForDpi(12);
     }
 
-    // Paint the top area
-    pDC->FillSolidRect(CRect(rect.left, rect.top, rect.right, lineY), topColor);
-
-    // Paint the footer area
-    pDC->FillSolidRect(CRect(rect.left, lineY, rect.right, rect.bottom), footerColor);
-
-    // Draw the 1px separator
-    const CPen pen(PS_SOLID, 1, lineColor);
-    const GdiObjectSelection soPen(pDC, &pen);
-    pDC->MoveTo(0, lineY);
-    pDC->LineTo(rect.right, lineY);
-
+    // Etched glass separator above the button row
+    const bool dark = DarkMode::IsDarkModeActive();
+    pDC->FillSolidRect(CRect(rect.left, lineY, rect.right, lineY + 1), dark ? RGB(70, 80, 130) : RGB(255, 255, 255));
+    pDC->FillSolidRect(CRect(rect.left, lineY + 1, rect.right, lineY + 2), dark ? RGB(10, 12, 30) : RGB(196, 208, 236));
     return true;
 }
 
 // Global wrapper functions
 int ShowMessageBox(const std::wstring& message, const UINT type)
 {
-    if (!DarkMode::IsDarkModeActive())
-    {
-        return MessageBoxW(GetDialogOwner(), message.c_str(), L"WinDirStat", type);
-    }
-
     return ShowMessageBox(nullptr, message, wds::strWinDirStat, type);
 }
 
 int ShowMessageBox(const HWND wnd, const std::wstring& message, const std::wstring& title, const UINT type)
 {
-    if (!DarkMode::IsDarkModeActive())
-    {
-        return MessageBox(wnd, message.c_str(), title.c_str(), type);
-    }
-
     CMessageBoxDlg dlg(message, title, type, WindowRef(wnd));
     return static_cast<int>(dlg.ShowModal());
 }

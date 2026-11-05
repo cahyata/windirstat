@@ -5,6 +5,7 @@
 // Distributed WITHOUT ANY WARRANTY; see LICENSE.md for details.
 
 #include "pch.h"
+#include "GlassUi.h"
 #include "SelectDrivesDlg.h"
 #include "AboutDlg.h"
 #include "CsvLoader.h"
@@ -23,6 +24,7 @@ CDirStatApp CDirStatApp::s_singleton;
 int APIENTRY wWinMain(_In_ HINSTANCE, _In_opt_ HINSTANCE, _In_ LPWSTR lpCmdLine, _In_ int nShowCmd)
 {
     InitCommonControls();
+    if (lpCmdLine != nullptr && wcsstr(lpCmdLine, L"/glassdemo") != nullptr) return GlassUi::RunDemo();
     CDirStatApp* app = CDirStatApp::Get();
     app->m_lpCmdLine = lpCmdLine;
     app->m_nCmdShow = nShowCmd;
@@ -542,6 +544,17 @@ void CDirStatApp::OnAppAbout()
 void CDirStatApp::OnSelectScanRoots()
 {
     CopyAllDriveMappings();
+
+    // Direct2D glass dialog; falls back to the classic dialog when GPU composition is unavailable
+    std::wstring glassPath;
+    bool cancelled = false;
+    if (GlassUi::SelectScanRoots(GetMainWindowHandle(), glassPath, cancelled))
+    {
+        if (cancelled) return;
+        CMainFrame::Get()->GetFileTabbedView()->SetActiveFileTreeView();
+        CWinDirStatModel::Get()->StartScan(glassPath);
+        return;
+    }
 
     if (const auto dlg = std::make_unique<CSelectDrivesDlg>(); IDOK == dlg->ShowModal())
     {

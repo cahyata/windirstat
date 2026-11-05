@@ -13,7 +13,7 @@ namespace
 {
     constexpr UINT TEXT_X_MARGIN = 6u; // Horizontal distance of the text from the edge of the item rectangle
     constexpr UINT LABEL_INFLATE_CX = 3u; // How much the label is enlarged, to get the selection and focus rectangle
-    constexpr UINT LABEL_Y_MARGIN = 2u;
+    constexpr UINT LABEL_Y_MARGIN = 4u;
     constexpr UINT GENERAL_INDENT = 5u;
 
     class SelectionPreserver
@@ -160,8 +160,8 @@ void CWdsListItem::DrawLabel(const CWdsListControl* list, CDC* pdc, CRect& rc, c
         {
             selection.right = rc.right;
         }
-        // Fill the selection rectangle background (usually dark blue)
-        pdc->FillSolidRect(selection, list->GetHighlightColor());
+        // Fill the selection rectangle background (the full-row capsule is drawn by the list itself)
+        if (!list->IsFullRowSelection()) pdc->FillSolidRect(selection, list->GetHighlightColor());
     }
 
     // Set text color for device context
@@ -198,55 +198,43 @@ void CWdsListItem::DrawLabel(const CWdsListControl* list, CDC* pdc, CRect& rc, c
 
 void CWdsListItem::DrawSelection(const CWdsListControl* list, CDC* pdc, CRect rc, const UINT state) const
 {
-    if (!list->IsFullRowSelection())
-    {
-        return;
-    }
-    if ((state & ODS_SELECTED) == 0)
-    {
-        return;
-    }
-
-    rc.Deflate(0, LABEL_Y_MARGIN);
-    pdc->FillSolidRect(rc, list->GetHighlightColor());
+    // Full-row selection is drawn as one rounded capsule by the list control
+    (void)list; (void)pdc; (void)rc; (void)state;
 }
 
 void CWdsListItem::DrawPercentage(CDC* pdc, const CRect rc, const double fraction, const COLORREF color) const
 {
-    COLORREF dark = RGB(118, 118, 118); // Dark edge
-    COLORREF light = RGB(198, 198, 198); // Light edge
-    COLORREF bg = RGB(225, 225, 225); // Background
-    if (DarkMode::IsDarkModeActive())
+    // Capsule progress bar: soft track with a glossy rounded fill
+    using namespace Gdiplus;
+    const bool dark = DarkMode::IsDarkModeActive();
+    const int barHeight = std::max(6, rc.Height() * 55 / 100);
+    const REAL top = static_cast<REAL>(rc.top + (rc.Height() - barHeight) / 2);
+    const REAL left = static_cast<REAL>(rc.left) + 1.0f;
+    const REAL width = static_cast<REAL>(rc.Width()) - 2.0f;
+    const REAL height = static_cast<REAL>(barHeight);
+    Graphics g(pdc->Handle());
+    g.SetSmoothingMode(SmoothingModeAntiAlias);
+    const auto pill = [](GraphicsPath& path, const REAL x, const REAL y, const REAL w, const REAL h)
     {
-        dark = RGB(60, 60, 60); // Dark edge
-        light = RGB(50, 50, 50); // Light edge
-        bg = RGB(40, 40, 40); // Background
-    }
-
-    CRect rcLeft = rc;
-    rcLeft.right = static_cast<int>(rcLeft.left + rc.Width() * fraction);
-
-    CRect rcRight = rc;
-    rcRight.left = rcLeft.right;
-
-    if (rcLeft.right > rcLeft.left)
+        const REAL d = std::min(h, w);
+        path.AddArc(x, y, d, d, 90, 180);
+        path.AddArc(x + w - d, y, d, d, 270, 180);
+        path.CloseFigure();
+    };
+    GraphicsPath track;
+    pill(track, left, top, width, height);
+    const SolidBrush trackBrush(Color(dark ? 50 : 46, dark ? 255 : 60, dark ? 255 : 70, dark ? 255 : 100));
+    g.FillPath(&trackBrush, &track);
+    const REAL fillWidth = width * static_cast<REAL>(fraction);
+    if (fillWidth >= 1.0f)
     {
-        pdc->Draw3dRect(rcLeft, light, dark);
-    }
-    rcLeft.Deflate(1, 1);
-    if (rcLeft.right > rcLeft.left)
-    {
-        pdc->FillSolidRect(rcLeft, color);
-    }
-
-    if (rcRight.right > rcRight.left)
-    {
-        pdc->Draw3dRect(rcRight, light, light);
-    }
-    rcRight.Deflate(1, 1);
-    if (rcRight.right > rcRight.left)
-    {
-        pdc->FillSolidRect(rcRight, bg);
+        GraphicsPath fill;
+        pill(fill, left, top, std::max(fillWidth, height), height);
+        const BYTE r = GetRValue(color), gr = GetGValue(color), b = GetBValue(color);
+        const LinearGradientBrush fillBrush(PointF(0, top), PointF(0, top + height),
+            Color(255, static_cast<BYTE>(std::min(255, r + 48)), static_cast<BYTE>(std::min(255, gr + 48)),
+                static_cast<BYTE>(std::min(255, b + 48))), Color(255, r, gr, b));
+        g.FillPath(&fillBrush, &fill);
     }
 }
 
@@ -262,6 +250,7 @@ CWdsListControl::CWdsListControl(std::vector<int>* columnOrder, std::vector<int>
     assert(m_columnWidths != nullptr);
     assert(m_columnVisibility != nullptr);
     InitializeColors();
+    Live().push_back(this);
 }
 
 // This method MUST be called before the Control is shown.
@@ -530,7 +519,25 @@ void CWdsListControl::DrawItem(const LPDRAWITEMSTRUCT pdis)
     GdiObjectSelection sobm(&dcMem, &paint.bitmap);
 
     const COLORREF backColor = GetItemBackgroundColor(static_cast<int>(pdis->itemID));
-    dcMem.FillSolidRect(rcItem - rcItem.TopLeft(), backColor);
+    {
+        // Rows are frosted glass over the backdrop; a selected row becomes a rounded capsule
+        const RECT rowRc = rcItem;
+        GlassTheme::PaintBackdropAt(dcMem.Handle(), m_hWnd, rowRc);
+        const bool dark = DarkMode::IsDarkModeActive();
+        const RECT local{ 0, 0, rcItem.Width(), rcItem.Height() };
+        GlassTheme::FillWash(dcMem.Handle(), local, RGB(255, 255, 255), dark ? 14 : 150);
+        if ((pdis->itemState & ODS_SELECTED) != 0 && IsFullRowSelection())
+        {
+            // Keep the capsule inside the visible width so its right end is rounded too
+            const int visibleRight = std::min<int>(rcItem.Width(), GetClientRect().right - rcItem.left);
+            const RECT capsule{ 5, 2, std::max(40, visibleRight - 5), rcItem.Height() - 2 };
+            GlassTheme::FillRounded(dcMem.Handle(), capsule, (capsule.bottom - capsule.top) / 2 + 1,
+                GetItemSelectionBackgroundColor(static_cast<int>(pdis->itemID)), 255);
+        }
+        else if (backColor != DarkMode::SystemColor(COLOR_WINDOW) && (pdis->itemState & ODS_SELECTED) == 0)
+            GlassTheme::FillWash(dcMem.Handle(), local, dark ? RGB(255, 255, 255) : RGB(60, 70, 100), dark ? 10 : 14);
+        dcMem.SetBkMode(TRANSPARENT);
+    }
 
     // Set defaults for all text drawing
     ScopedBkColor bkColor(&dcMem, backColor);
@@ -559,6 +566,15 @@ void CWdsListControl::DrawItem(const LPDRAWITEMSTRUCT pdis)
             {
                 backColorSub = GetItemSelectionBackgroundColor(pdis->itemID);
                 textColor = GetItemSelectionTextColor(pdis->itemID);
+            }
+
+            // Secondary columns recede so the name column leads
+            if (subitem != 0 && !(pdis->itemState & ODS_SELECTED && IsFullRowSelection()))
+            {
+                const auto mixChannel = [](const int a, const int b) { return (a * 62 + b * 38) / 100; };
+                textColor = RGB(mixChannel(GetRValue(textColor), GetRValue(backColor)),
+                    mixChannel(GetGValue(textColor), GetGValue(backColor)),
+                    mixChannel(GetBValue(textColor), GetBValue(backColor)));
             }
 
             // Set the text color
@@ -591,15 +607,186 @@ void CWdsListControl::DrawItem(const LPDRAWITEMSTRUCT pdis)
         }
     }
 
-    if ((pdis->itemState & ODS_FOCUS) != 0 && HasFocus() && IsFullRowSelection())
-    {
-        CRect focusRect = rcItem - rcItem.TopLeft();
-        focusRect.left = focusLeft - 1;
-        DarkMode::DrawFocusRect(&dcMem, focusRect);
-    }
+    // No dotted focus rectangle: the rounded selection capsule already marks the row
+    (void)focusLeft;
 
     pdc->BitBlt(rcItem.left, rcItem.top,
         rcItem.Width(), rcItem.Height(), &dcMem, 0, 0, SRCCOPY);
+}
+
+bool CWdsListControl::BuildGlassView(const HWND frame, std::shared_ptr<const GlassListView>& out)
+{
+    const HWND list = m_hWnd;
+    if (!::IsWindow(list) || !::IsWindowVisible(list) || !IsFullRowSelection() || !::IsChild(frame, list)) return false;
+    const HWND header = ListView_GetHeader(list);
+    if (header == nullptr) return false;
+
+    const auto toFrame = [&](RECT rc, const HWND from)
+    {
+        ::MapWindowPoints(from, frame, reinterpret_cast<POINT*>(&rc), 2);
+        return rc;
+    };
+    const auto screenToFrame = [&](RECT rc)
+    {
+        ::MapWindowPoints(nullptr, frame, reinterpret_cast<POINT*>(&rc), 2);
+        return rc;
+    };
+
+    RECT windowScreen{}, clientRc{}, headerScreen{};
+    ::GetWindowRect(list, &windowScreen);
+    ::GetClientRect(list, &clientRc);
+    ::GetWindowRect(header, &headerScreen);
+    const RECT listRc = screenToFrame(windowScreen);
+    const RECT client = toFrame(clientRc, list);
+    const RECT headerRc = screenToFrame(headerScreen);
+
+    POINT cursor{};
+    ::GetCursorPos(&cursor);
+    POINT local = cursor;
+    ::ScreenToClient(list, &local);
+    const bool overList = ::WindowFromPoint(cursor) == list;
+    const int count = ListView_GetItemCount(list);
+    const int first = ListView_GetTopIndex(list);
+    const int last = std::min(count, first + ListView_GetCountPerPage(list) + 2);
+    const int columnCount = Header_GetItemCount(header);
+
+    // Cheap fingerprint: rebuild only when something visible moved, otherwise reuse the snapshot for a while
+    size_t signature = 1469598103934665603ull;
+    const auto mix = [&signature](const size_t v) { signature = (signature ^ v) * 1099511628211ull; };
+    mix(static_cast<size_t>(listRc.left)); mix(static_cast<size_t>(listRc.top));
+    mix(static_cast<size_t>(listRc.right)); mix(static_cast<size_t>(listRc.bottom));
+    mix(static_cast<size_t>(first)); mix(static_cast<size_t>(count));
+    mix(static_cast<size_t>(::GetFocus() == list)); mix(static_cast<size_t>(DarkMode::IsDarkModeActive()));
+    for (int c = 0; c < columnCount; ++c)
+    {
+        RECT hr{};
+        HDITEMW hd{ .mask = HDI_FORMAT };
+        Header_GetItemRect(header, c, &hr);
+        Header_GetItem(header, c, &hd);
+        mix(static_cast<size_t>(hr.left)); mix(static_cast<size_t>(hr.right)); mix(static_cast<size_t>(hd.fmt));
+    }
+    for (int i = first; i < last; ++i)
+    {
+        RECT r{};
+        ListView_GetItemRect(list, i, &r, LVIR_BOUNDS);
+        mix(static_cast<size_t>(r.top));
+        mix(static_cast<size_t>(ListView_GetItemState(list, i, LVIS_SELECTED) & LVIS_SELECTED));
+        mix(static_cast<size_t>(overList && local.y >= r.top && local.y < r.bottom && local.x >= 0 && local.x < clientRc.right));
+    }
+    for (const int bar : { OBJID_VSCROLL, OBJID_HSCROLL })
+    {
+        SCROLLBARINFO info{ .cbSize = sizeof(info) };
+        if (::GetScrollBarInfo(list, static_cast<LONG>(bar), &info))
+        {
+            mix(static_cast<size_t>(info.xyThumbTop)); mix(static_cast<size_t>(info.xyThumbBottom));
+            mix(static_cast<size_t>(info.rgstate[0]));
+        }
+    }
+    const ULONGLONG now = GetTickCount64();
+    if (m_glassView != nullptr && signature == m_glassSignature && now - m_glassBuilt < 300)
+    {
+        out = m_glassView;
+        return true;
+    }
+
+    auto view = std::make_shared<GlassListView>();
+    view->list = listRc;
+    view->client = client;
+    view->header = headerRc;
+    if (const HWND pane = ::GetParent(list); pane != nullptr)
+    {
+        RECT pr{};
+        ::GetWindowRect(pane, &pr);
+        view->card = screenToFrame(pr);
+    }
+    else view->card = listRc;
+    view->cardRadius = GlassTheme::CardRadius;
+    view->dark = DarkMode::IsDarkModeActive();
+    view->focused = ::GetFocus() == list || DarkMode::IsHighContrastActive();
+    view->text = DarkMode::SystemColor(COLOR_WINDOWTEXT);
+    view->highlight = GetHighlightColor();
+    view->highlightText = GetHighlightTextColor();
+    view->rowHeight = GetRowHeight();
+    view->iconPx = GetIconSize();
+    view->indentStep = GetRowHeight() * 7 / 8;
+    view->generalIndent = GetGeneralLeftIndent();
+    LOGFONT font{};
+    ::GetObjectW(GetFont(), sizeof(font), &font);
+    view->fontPx = std::max(8, std::abs(static_cast<int>(font.lfHeight)));
+
+    // Columns in display order with their real (scrolled) positions
+    std::vector<int> subitems;
+    const int headerLeft = headerRc.left;
+    for (int c = 0; c < columnCount; ++c)
+    {
+        RECT hr{};
+        if (!Header_GetItemRect(header, c, &hr) || hr.right - hr.left <= 1) continue;
+        std::array<WCHAR, 128> title{};
+        LVCOLUMNW column{ .mask = LVCF_SUBITEM | LVCF_FMT | LVCF_TEXT, .pszText = title.data(), .cchTextMax = static_cast<int>(title.size()) };
+        if (!ListView_GetColumn(list, c, &column)) continue;
+        HDITEMW hd{ .mask = HDI_FORMAT };
+        Header_GetItem(header, c, &hd);
+        GlassListColumn out_col;
+        out_col.left = headerLeft + hr.left;
+        out_col.right = headerLeft + hr.right;
+        out_col.rightAligned = (column.fmt & LVCFMT_RIGHT) != 0;
+        out_col.title = title.data();
+        out_col.sort = (hd.fmt & HDF_SORTUP) ? 1 : (hd.fmt & HDF_SORTDOWN) ? 2 : 0;
+        view->columns.push_back(std::move(out_col));
+        subitems.push_back(column.iSubItem);
+    }
+
+    const POINT origin = [&] { POINT p{ 0, 0 }; ::MapWindowPoints(list, frame, &p, 1); return p; }();
+    for (int i = first; i < last; ++i)
+    {
+        RECT r{};
+        if (!ListView_GetItemRect(list, i, &r, LVIR_BOUNDS) || r.bottom <= 0 || r.top >= clientRc.bottom) continue;
+        CWdsListItem* item = GetItem(i);
+        if (item == nullptr) continue;
+        GlassListRow row;
+        row.top = origin.y + r.top;
+        row.bottom = origin.y + r.bottom;
+        row.selected = (ListView_GetItemState(list, i, LVIS_SELECTED) & LVIS_SELECTED) != 0;
+        row.hot = overList && local.y >= r.top && local.y < r.bottom && local.x >= 0 && local.x < clientRc.right;
+        row.striped = IsItemStripColor(i);
+        row.cells.reserve(subitems.size());
+        for (const int subitem : subitems)
+        {
+            GlassCell cell;
+            item->GetGlassCell(subitem, cell);
+            row.cells.push_back(std::move(cell));
+        }
+        view->rows.push_back(std::move(row));
+    }
+
+    for (const int bar : { OBJID_VSCROLL, OBJID_HSCROLL })
+    {
+        SCROLLBARINFO info{ .cbSize = sizeof(info) };
+        if (!::GetScrollBarInfo(list, static_cast<LONG>(bar), &info) || (info.rgstate[0] & (STATE_SYSTEM_INVISIBLE | STATE_SYSTEM_UNAVAILABLE)) != 0) continue;
+        GlassScrollBar& target = bar == OBJID_VSCROLL ? view->vscroll : view->hscroll;
+        target.visible = true;
+        target.track = screenToFrame(info.rcScrollBar);
+        target.thumb = target.track;
+        if (bar == OBJID_VSCROLL)
+        {
+            target.thumb.bottom = target.track.top + info.xyThumbBottom;
+            target.thumb.top = target.track.top + info.xyThumbTop;
+        }
+        else
+        {
+            target.thumb.right = target.track.left + info.xyThumbBottom;
+            target.thumb.left = target.track.left + info.xyThumbTop;
+        }
+    }
+
+    view->hash = signature;
+    for (const auto& row : view->rows)
+        for (const auto& cell : row.cells) view->hash = (view->hash ^ std::hash<std::wstring>{}(cell.text)) * 1099511628211ull;
+    m_glassView = view;
+    m_glassSignature = signature;
+    m_glassBuilt = now;
+    out = std::move(view);
+    return true;
 }
 
 CRect CWdsListControl::GetWholeSubitemRect(const int item, const int subitem) const
@@ -996,6 +1183,25 @@ void CWdsListControl::OnCustomDraw(NMHDR* pNMHDR, LRESULT* pResult) const
 {
     // Check if this is a notification from the header control
     *pResult = CDRF_DODEFAULT;
+    if (const HWND header = GetHeader().Handle(); header != nullptr && pNMHDR->hwndFrom == header)
+    {
+        const auto* draw = reinterpret_cast<NMCUSTOMDRAW*>(pNMHDR);
+        if (draw->dwDrawStage == CDDS_PREPAINT)
+        {
+            GlassTheme::PaintBackdrop(draw->hdc, header);
+            RECT capsule = draw->rc;
+            capsule.left += 4; capsule.right -= 4; capsule.top += 3; capsule.bottom -= 3;
+            GlassTheme::FillRounded(draw->hdc, capsule, (capsule.bottom - capsule.top) / 2,
+                RGB(255, 255, 255), DarkMode::IsDarkModeActive() ? 18 : 120);
+            *pResult = CDRF_NOTIFYITEMDRAW;
+        }
+        else if (draw->dwDrawStage == CDDS_ITEMPREPAINT)
+        {
+            GlassTheme::DrawHeaderItem(draw->hdc, header, static_cast<int>(draw->dwItemSpec), draw->rc);
+            *pResult = CDRF_SKIPDEFAULT;
+        }
+        return;
+    }
     if (!DarkMode::IsDarkModeActive())
     {
         return;
@@ -1022,21 +1228,11 @@ bool CWdsListControl::OnEraseBkgnd(CDC* pDC) const
         GetItemRect(itemCount - 1, lastRect, LVIR_BOUNDS);
     }
 
-    // Erase unused area to the right of all items
+    // Unused area is glass too
     const CRect rectClient = GetClientRect();
-    if (lastRect.right < rectClient.right)
-    {
-        pDC->FillSolidRect(lastRect.right, 0, rectClient.right - lastRect.right,
-            lastRect.bottom, DarkMode::SystemColor(COLOR_WINDOW));
-    }
-
-    // Erase unused area at the bottom of the last item
-    if (lastRect.bottom < rectClient.bottom)
-    {
-        pDC->FillSolidRect(0, lastRect.bottom, rectClient.right,
-            rectClient.bottom - lastRect.bottom, DarkMode::SystemColor(COLOR_WINDOW));
-    }
-
+    GlassTheme::PaintBackdropAt(pDC->Handle(), m_hWnd, rectClient);
+    GlassTheme::FillWash(pDC->Handle(), rectClient, RGB(255, 255, 255), DarkMode::IsDarkModeActive() ? 14 : 150);
+    (void)lastRect;
     return true;
 }
 

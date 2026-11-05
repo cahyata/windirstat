@@ -48,6 +48,7 @@ public:
     virtual int CompareSibling(const CTreeListItem* tlib, int subitem) const = 0;
 
     bool DrawSubItem(int subitem, CDC* pdc, CRect rc, UINT state, int* width, int* focusLeft) override;
+    void GetGlassCell(int subitem, GlassCell& cell) override;
     std::wstring GetText(int subitem) const override;
     HICON GetIcon() override;
     int Compare(const CWdsListItem* baseOther, int subitem) const override;

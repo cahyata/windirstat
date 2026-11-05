@@ -53,6 +53,8 @@ inline LRESULT CALLBACK ModalMessageHookProc(const int code, const WPARAM wParam
     return CallNextHookEx(g_modalPreTranslateHook, code, wParam, lParam);
 }
 
+namespace GlassTheme { void StyleDialog(HWND dialog); }
+
 class CDialog : public MessageTarget<CDialog, CWnd>
 {
 public:
@@ -129,6 +131,7 @@ public:
     virtual void OnCancel() { CloseModal(IDCANCEL); }
     void CloseModal(const int result) { EndDialog(m_hWnd, result); }
     HBRUSH OnCtlColor(CDC* pDC, WindowRef pWnd, UINT nCtlColor);
+    bool OnEraseBkgnd(CDC* pDC);
 
     static std::span<const RouteEntry> Routes()
     {
@@ -137,6 +140,7 @@ public:
             Route::Command<&OnOK>(IDOK),
             Route::Command<&OnCancel>(IDCANCEL),
             Route::Window<&OnCtlColor>(WM_CTLCOLOR),
+            Route::Window<&OnEraseBkgnd>(WM_ERASEBKGND),
         };
         return entries;
     }
@@ -173,6 +177,7 @@ inline INT_PTR CALLBACK FrameworkDialogProc(HWND hWnd, const UINT msg, const WPA
         {
             InitializeDialogFontAndSize(hWnd);
             const bool result = pDlg->OnInitDialog();
+            GlassTheme::StyleDialog(hWnd);
             RemovePropW(hWnd, DialogSizeDeficitProperty);
             return result;
         }
@@ -355,6 +360,7 @@ public:
     }
 
     void SetBaseTitle(std::wstring title) { m_strTitle = std::move(title); }
+    void SetLayoutMargin(const int margin) { m_layoutMargin = margin; UpdateLayout(); }
     void SetTopBar(CWnd* bar) { m_topBar = bar; UpdateLayout(); }
     void SetBottomBar(CWnd* bar) { m_bottomBar = bar; UpdateLayout(); }
     void OnIdleUpdateCmdUI() override
@@ -399,6 +405,7 @@ private:
     std::wstring m_strTitle;
     CWnd* m_topBar = nullptr;
     CWnd* m_bottomBar = nullptr;
+    int m_layoutMargin = 0;
 };
 
 inline bool CFrameWnd::PreprocessMessage(MSG* pMsg)
@@ -459,15 +466,31 @@ inline void CFrameWnd::UpdateLayout()
     if (m_topBar != nullptr && IsWindow(m_topBar->m_hWnd) && m_topBar->IsWindowVisible())
     {
         const CSize size = m_topBar->PreferredSize();
-        m_topBar->SetWindowPos(nullptr, rc.left, top, rc.Width(), size.cy, SWP_NOZORDER | SWP_NOACTIVATE);
-        top += size.cy;
+        const int side = m_layoutMargin, pad = m_layoutMargin / 2;
+        m_topBar->SetWindowPos(nullptr, rc.left + side, top + pad, std::max(0, rc.Width() - 2 * side), size.cy,
+            SWP_NOZORDER | SWP_NOACTIVATE);
+        top += size.cy + 2 * pad;
     }
     if (m_bottomBar != nullptr && IsWindow(m_bottomBar->m_hWnd) && m_bottomBar->IsWindowVisible())
     {
         const CSize size = m_bottomBar->PreferredSize();
-        m_bottomBar->SetWindowPos(nullptr, rc.left, bottom - size.cy, rc.Width(), size.cy, SWP_NOZORDER | SWP_NOACTIVATE);
-        bottom -= size.cy;
+        const int side = m_layoutMargin, pad = m_layoutMargin / 2;
+        m_bottomBar->SetWindowPos(nullptr, rc.left + side, bottom - size.cy - pad, std::max(0, rc.Width() - 2 * side),
+            size.cy, SWP_NOZORDER | SWP_NOACTIVATE);
+        bottom -= size.cy + 2 * pad;
     }
     if (const auto client = GetDlgItem(WDS_PANE_ID_BASE); client != nullptr)
-        client.SetWindowPos(nullptr, rc.left, top, rc.Width(), bottom - top, SWP_NOZORDER | SWP_NOACTIVATE);
+    {
+        const int margin = m_layoutMargin;
+        client.SetWindowPos(nullptr, rc.left + margin, top, std::max(0, rc.Width() - 2 * margin),
+            std::max(0, bottom - top - margin), SWP_NOZORDER | SWP_NOACTIVATE);
+        if (margin > 0)
+        {
+            // Backdrop is stretched to the frame, so everything on it must repaint on resize
+            Invalidate(false);
+            if (m_topBar != nullptr && IsWindow(m_topBar->m_hWnd)) m_topBar->Invalidate(false);
+            if (m_bottomBar != nullptr && IsWindow(m_bottomBar->m_hWnd)) m_bottomBar->Invalidate(false);
+            client.Invalidate(false);
+        }
+    }
 }

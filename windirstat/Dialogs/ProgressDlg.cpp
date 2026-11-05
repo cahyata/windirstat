@@ -6,6 +6,7 @@
 
 #include "pch.h"
 #include "ProgressDlg.h"
+#include "../GlassUi.h"
 
 CProgressDlg::CProgressDlg(const ULONGLONG total, const Flags flags, CWnd* pParent,
     std::function<void(CProgressDlg*)> task)
@@ -47,6 +48,9 @@ bool CProgressDlg::OnInitDialog()
 
     // Center dialog
     CenterWindow();
+
+    // Glass mirror of this dialog (the dialog keeps all logic but becomes invisible)
+    GlassUi::AttachDialog(Handle(), wds::strWinDirStat);
 
     // Start worker thread
     StartWorkerThread();

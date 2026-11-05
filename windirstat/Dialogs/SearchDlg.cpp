@@ -8,6 +8,7 @@
 #include "SearchDlg.h"
 #include "FileSearchControl.h"
 #include "FileTabbedView.h"
+#include "../GlassUi.h"
 
 // SearchDlg dialog
 
@@ -113,6 +114,9 @@ bool SearchDlg::OnInitDialog()
     SetText(IDC_SEARCH_OWNER, COptions::SearchOwner.Obj());
 
     UpdateControlStatus();
+
+    // Glass mirror of this dialog (the dialog keeps all logic but becomes invisible)
+    GlassUi::AttachDialog(Handle(), Localization::Lookup(IDS_SEARCH_TITLE));
     return true;
 }
 

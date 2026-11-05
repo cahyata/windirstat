@@ -416,7 +416,11 @@ void CMainFrame::LayoutProgress()
             m_wndStatusBar.ScaleForDpi(5), m_wndStatusBar.ScaleForDpi(4));
         progRc.right = std::max(progRc.left, progRc.right);
         progRc.bottom = std::max(progRc.top, progRc.bottom);
-        if (m_wndStatusBar.GetChildWindowRect(m_progress.m_hWnd) != progRc) m_progress.MoveWindow(progRc);
+        if (m_wndStatusBar.GetChildWindowRect(m_progress.m_hWnd) != progRc)
+        {
+            m_progress.MoveWindow(progRc);
+            GlassTheme::ApplyRoundedRegion(m_progress.m_hWnd, progRc.Height() / 2);
+        }
     }
     else if (m_pacman.m_hWnd != nullptr && m_wndStatusBar.GetChildWindowRect(m_pacman.m_hWnd) != rc)
     {
@@ -664,19 +668,24 @@ static void PaintWatcherAutoScroll(Gdiplus::Graphics& g, const bool enabled)
 
 void CMainFrame::RebuildToolBar(const bool rebuildButtons)
 {
-    constexpr int baseImageSize = 20;
+    constexpr int baseImageSize = 28; // larger glyphs so the icon fills its hover/click area
     const int imageSize = ScaleForToolBarDpi(baseImageSize, m_wndToolBar);
-    const SIZE buttonSize
-    {
-        ScaleForToolBarDpi(m_defaultButtonSize.cx, m_wndToolBar),
-        ScaleForToolBarDpi(m_defaultButtonSize.cy, m_wndToolBar)
-    };
+    const int buttonExtent = imageSize + ScaleForToolBarDpi(12, m_wndToolBar);
+    const SIZE buttonSize{ buttonExtent, buttonExtent };
 
     if (CDirStatApp::Get()->m_pMainWnd == nullptr) return;
     m_wndToolBar.SetFont(GetAppFont(m_wndToolBar));
     m_watcherFilter.SetFont(GetAppFont(m_wndToolBar));
     const auto toolTip = reinterpret_cast<HWND>(m_wndToolBar.SendNativeMessage(TB_GETTOOLTIPS));
     ::SendMessageW(toolTip, WM_SETFONT, reinterpret_cast<WPARAM>(GetAppFont(toolTip)), true);
+    if (toolTip != nullptr)
+    {
+        // Rounded, borderless tooltip to match the glass toolbar
+        const DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
+        DwmSetWindowAttribute(toolTip, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
+        const COLORREF border = DWMWA_COLOR_NONE;
+        DwmSetWindowAttribute(toolTip, DWMWA_BORDER_COLOR, &border, sizeof(border));
+    }
     if (!rebuildButtons)
     {
         m_wndToolBar.SetButtonSize(buttonSize);

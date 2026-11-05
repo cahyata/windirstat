@@ -6,6 +6,7 @@
 
 #pragma once
 #include "pch.h"
+#include "GlassList.h"
 
 class CWdsListControl;
 
@@ -58,6 +59,12 @@ public:
     virtual void DrawAdditionalState(CDC* /*pdc*/, const CRect& /*rcLabel*/) const {}
     void DrawSelection(const CWdsListControl* list, CDC* pdc, CRect rc, UINT state) const;
     virtual HICON GetIcon() = 0;
+    // Describes a cell for the GPU compositor (plain text unless an item draws itself)
+    virtual void GetGlassCell(const int subitem, GlassCell& cell)
+    {
+        cell.text = GetText(subitem);
+        cell.textColor = GetItemTextColor();
+    }
     virtual bool IsVisible() const { return true; }
     void DrawLabel(const CWdsListControl* list, CDC* pdc, CRect& rc, UINT state, int* width, int* focusLeft, bool indent = true);
     void DrawPercentage(CDC* pdc, CRect rc, double fraction, COLORREF color) const;
@@ -72,7 +79,7 @@ class CWdsListControl : public MessageTarget<CWdsListControl, CListCtrl>
 {
 public:
     CWdsListControl(std::vector<int>* columnOrder, std::vector<int>* columnWidths, std::vector<int>* columnVisibility);
-    ~CWdsListControl() override = default;
+    ~CWdsListControl() override { std::erase(Live(), this); }
     void OnColumnsInserted(std::initializer_list<int> requiredColumns = {}, std::initializer_list<int> defaultHiddenColumns = {});
     void OnFontSizeChanged(int oldPercent, int newPercent) override;
     virtual void SysColorChanged();
@@ -128,6 +135,14 @@ public:
     void DeselectAll();
     HFONT GetFont() const;
 
+    // Lists the GPU compositor may paint completely (all of their cells are describable through GetGlassCell)
+    virtual bool GlassRenderable() const { return false; }
+    // Snapshots the visible part of this list for the compositor. Coordinates are relative to `frame`.
+    bool BuildGlassView(HWND frame, std::shared_ptr<const GlassListView>& out);
+
+    // Every live list control, so the GPU overlay can add its glass finish to their rows
+    static std::vector<CWdsListControl*>& Live() { static std::vector<CWdsListControl*> live; return live; }
+
 protected:
     void InitializeColors();
     void UpdateSortIndicator();
@@ -175,6 +190,11 @@ protected:
     static constexpr DWORD WM_SELECTION_CHANGED = WM_APP + 1;
     bool m_selectionChangePending = false;
     mutable HFONT m_cachedFont = nullptr;
+
+    // Compositor snapshot cache
+    std::shared_ptr<const GlassListView> m_glassView;
+    size_t m_glassSignature = 0;
+    ULONGLONG m_glassBuilt = 0;
 
 public:
     static std::span<const RouteEntry> Routes();

@@ -13,6 +13,18 @@ HICON CTreeListItem::GetIcon()
     return viewState ? viewState->icon : nullptr;
 }
 
+void CTreeListItem::GetGlassCell(const int subitem, GlassCell& cell)
+{
+    CWdsListItem::GetGlassCell(subitem, cell);
+    if (subitem != 0) return;
+    cell.kind = GlassCell::Kind::Label;
+    cell.tree = true;
+    cell.icon = GetIcon();
+    cell.indent = GetIndent();
+    cell.hasChildren = HasChildren();
+    cell.expanded = IsExpanded();
+}
+
 bool CTreeListItem::DrawSubItem(const int subitem, CDC* pdc, const CRect rc, const UINT state, int* width, int* focusLeft)
 {
     if (subitem != 0)

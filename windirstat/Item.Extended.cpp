@@ -46,6 +46,27 @@ static void FreeXxHashState(XXH3_state_t* state) noexcept { XXH3_freeState(state
 
 // --- CTreeListItem Interface ---
 
+void CItem::GetGlassCell(const int subitem, GlassCell& cell)
+{
+    CTreeListItem::GetGlassCell(subitem, cell);
+    if (subitem != COL_SIZE_PROPORTION) return;
+
+    // Mirrors DrawSubItem(): while reading, the cell shows progress (or text); otherwise the proportion bar
+    const bool showReadJobs = MustShowReadJobs();
+    if (showReadJobs && (!COptions::PacmanAnimation || IsDone())) return;
+    cell.kind = GlassCell::Kind::Bar;
+    cell.text.clear();
+    if (showReadJobs)
+    {
+        cell.busy = true;
+        return;
+    }
+    cell.fraction = GetFraction();
+    cell.absolute = GetAbsoluteFraction();
+    cell.color = GetPercentageColor();
+    cell.barIndent = GetIndent() * ScaleForDpi(COptions::SizeProportionIndent);
+}
+
 bool CItem::DrawSubItem(const int subitem, CDC* pdc, CRect rc, const UINT state, int* width, int* focusLeft)
 {
     if (subitem == COL_NAME)

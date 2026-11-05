@@ -945,6 +945,27 @@ void CTreeMap::RenderLeaf(const BitmapView bitmap, const CItem* item,
     }
 
     RenderRectangle(bitmap, rc, surface, item->TmiGetGraphColor());
+
+    // Rounded tiles: cut the corners of larger tiles back to the surface colour
+    const int minSide = std::min(rc.Width(), rc.Height());
+    if (minSide >= 12)
+    {
+        const int r = std::clamp(minSide / 5, 3, 12);
+        const COLORREF surfaceColor = DarkMode::IsDarkModeActive() ? BGR(40, 32, 30) : BGR(238, 232, 232);
+        const size_t stride = bitmap.stride;
+        for (int dy = 0; dy < r; ++dy)
+        {
+            for (int dx = 0; dx < r; ++dx)
+            {
+                const float fx = r - dx - 0.5f, fy = r - dy - 0.5f;
+                if (fx * fx + fy * fy <= static_cast<float>(r * r)) continue;
+                bitmap.bits[static_cast<size_t>(rc.top + dy) * stride + rc.left + dx] = surfaceColor;
+                bitmap.bits[static_cast<size_t>(rc.top + dy) * stride + rc.right - 1 - dx] = surfaceColor;
+                bitmap.bits[static_cast<size_t>(rc.bottom - 1 - dy) * stride + rc.left + dx] = surfaceColor;
+                bitmap.bits[static_cast<size_t>(rc.bottom - 1 - dy) * stride + rc.right - 1 - dx] = surfaceColor;
+            }
+        }
+    }
 }
 
 void CTreeMap::RenderRectangle(const BitmapView bitmap, const CRect& rc, const std::array<double, 4>& surface, const DWORD color) const

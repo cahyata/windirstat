@@ -8,6 +8,24 @@
 
 #include "UiApplication.h"
 
+// "Liquid glass" theme helpers (aurora backdrop shared by all windows of the main frame)
+namespace GlassTheme
+{
+    void PaintBackdrop(HDC hdc, HWND window);
+    // Paints the backdrop for `area` (client coordinates of `window`) into hdc at (0,0)
+    void PaintBackdropAt(HDC hdc, HWND window, const RECT& area);
+    // Translucent colour wash over a rectangle in hdc coordinates
+    void FillWash(HDC hdc, const RECT& rect, COLORREF color, int alpha);
+    // Anti-aliased rounded rectangle fill (radius in pixels, alpha 0-255)
+    void FillRounded(HDC hdc, const RECT& rect, int radius, COLORREF color, int alpha);
+    // Glass column header item
+    void DrawHeaderItem(HDC hdc, HWND header, int index, const RECT& rect);
+    // Menu bar, caption colours and non-client glue of the main frame
+    void StyleMainFrame(HWND frame);
+    void ApplyRoundedRegion(HWND window, int radius);
+    inline constexpr int CardRadius = 22;
+}
+
 // -----------------------------------------------------------------------------
 //  CSplitterWnd (two-pane splitter)
 // -----------------------------------------------------------------------------
@@ -17,8 +35,8 @@ class CSplitterWnd : public MessageTarget<CSplitterWnd, CWnd>
 public:
     enum class Orientation : char { Horizontal, Vertical };
 
-    static constexpr int PaneBorderSize = 2;
-    static constexpr int SplitterSize = 7;
+    static constexpr int PaneBorderSize = 14;
+    static constexpr int SplitterSize = 18;
 
     ~CSplitterWnd() override { DestroyWindow(); }
     bool IsSplitterWindow() const noexcept override { return true; }
@@ -125,6 +143,7 @@ inline void CSplitterWnd::UpdateLayout()
         CRect rect = rects[index];
         if (pane->IsSplitterWindow()) rect.Inflate(PaneBorderSize, PaneBorderSize);
         pane->MoveWindow(rect);
+        if (!pane->IsSplitterWindow()) GlassTheme::ApplyRoundedRegion(pane->m_hWnd, GlassTheme::CardRadius);
     }
     Invalidate(false);
 }
@@ -288,6 +307,7 @@ public:
         }
     }
     int AddImage(const CBitmap& bmp);
+    HIMAGELIST GetImageList(const bool disabled) const { return disabled ? m_disabledImageList : m_imageList; }
 
     bool Create(CFrameWnd* parent)
     {
@@ -342,6 +362,8 @@ public:
         SendNativeMessage(TB_SETDISABLEDIMAGELIST, 0, m_disabledImageList);
         SendNativeMessage(TB_SETBITMAPSIZE, 0, MAKELPARAM(m_imageSize, m_imageSize));
         SendNativeMessage(TB_SETBUTTONSIZE, 0, MAKELPARAM(m_buttonSize.cx, m_buttonSize.cy));
+        SendNativeMessage(TB_SETPADDING, 0, MAKELPARAM(::ScaleForScreenDpi(4, m_hWnd), ::ScaleForScreenDpi(4, m_hWnd)));
+        SendNativeMessage(TB_SETINDENT, ::ScaleForScreenDpi(16, m_hWnd));
         SendNativeMessage(TB_AUTOSIZE);
         auto* frame = GetParent<CFrameWnd>();
         frame->UpdateLayout();
@@ -378,7 +400,7 @@ public:
     CSize PreferredSize() const override
     {
         const CRect rcParent = GetParent().GetClientRect();
-        return CSize(rcParent.Width(), GetButtonSize().cy + ::ScaleForScreenDpi(2, m_hWnd));
+        return CSize(rcParent.Width(), GetButtonSize().cy + ::ScaleForScreenDpi(10, m_hWnd));
     }
 
     void OnUpdateCmdUI(CFrameWnd* pTarget)
@@ -483,6 +505,7 @@ public:
     {
         return LayoutPanes()[std::to_underlying(pane)];
     }
+    const std::wstring& GetPaneText(const PaneId pane) const { return m_panes[std::to_underlying(pane)].text; }
 
     CSize PreferredSize() const override
     {

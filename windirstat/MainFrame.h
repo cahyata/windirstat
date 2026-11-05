@@ -231,6 +231,7 @@ public:
 
     CStatusBar m_wndStatusBar; // Status bar
     CToolBar m_wndToolBar;     // Toolbar
+    bool m_glassActive = false; // Acrylic glass backdrop applied
     CWatcherFilterEdit m_watcherFilter;
     CSize m_defaultButtonSize;  // Toolbar button size at creation, before DPI and size scaling
     int m_watcherAutoScrollOnImage = -1;

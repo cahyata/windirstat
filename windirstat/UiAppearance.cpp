@@ -121,9 +121,53 @@ static void PrepareScaledMenu(const HWND owner, const HMENU menu, const bool men
     if (!converted || !GetMenuInfo(menu, &info)) return;
     s_scaledMenuBackgrounds.emplace(menu, info.hbrBack);
     static std::map<COLORREF, CBrush> brushes;
-    const COLORREF background = DarkMode::SystemColor(menuBar ? COLOR_MENUBAR : COLOR_MENU);
+    const COLORREF background = menuBar ? DarkMode::SystemColor(COLOR_MENUBAR)
+        : (DarkMode::IsDarkModeActive() ? RGB(30, 32, 40) : RGB(241, 241, 244));
     info.hbrBack = brushes.try_emplace(background, background).first->second;
     if (!SetMenuInfo(menu, &info)) s_scaledMenuBackgrounds.erase(menu);
+}
+
+static void PaintGlassMenuBackground(const HDC dc, const CRect& rect, const bool menuBar, const HWND owner)
+{
+    const bool dark = DarkMode::IsDarkModeActive();
+    const HWND window = menuBar ? owner : WindowFromDC(dc);
+    if (window == nullptr || rect.Width() <= 0 || rect.Height() <= 0)
+    {
+        const CBrush fallback(DarkMode::SystemColor(menuBar ? COLOR_MENUBAR : COLOR_MENU));
+        FillRect(dc, &rect, fallback);
+        return;
+    }
+    const int saved = SaveDC(dc);
+    SetViewportOrgEx(dc, rect.left, rect.top, nullptr);
+    const RECT area = menuBar ? RECT{ rect.left, 0, rect.right, rect.Height() } : RECT(rect);
+    GlassTheme::PaintBackdropAt(dc, window, area);
+    if (!menuBar)
+        GlassTheme::FillWash(dc, RECT{ 0, 0, rect.Width(), rect.Height() }, RGB(250, 250, 252), dark ? 16 : 205);
+    RestoreDC(dc, saved);
+}
+
+static void DrawGlassMenuPill(const HDC dc, const CRect& rect, const int radius, const bool dark)
+{
+    using namespace Gdiplus;
+    Graphics g(dc);
+    g.SetSmoothingMode(SmoothingModeAntiAlias);
+    const REAL x = static_cast<REAL>(rect.left) + 0.5f, y = static_cast<REAL>(rect.top) + 0.5f;
+    const REAL w = static_cast<REAL>(rect.Width()) - 1.0f, h = static_cast<REAL>(rect.Height()) - 1.0f;
+    const REAL d = static_cast<REAL>(std::min(radius * 2, static_cast<int>(h)));
+    GraphicsPath path;
+    path.AddArc(x, y, d, d, 180, 90);
+    path.AddArc(x + w - d, y, d, d, 270, 90);
+    path.AddArc(x + w - d, y + h - d, d, d, 0, 90);
+    path.AddArc(x, y + h - d, d, d, 90, 90);
+    path.CloseFigure();
+    const LinearGradientBrush body(PointF(0, y), PointF(0, y + h),
+        dark ? Color(96, 255, 255, 255) : Color(255, 226, 226, 232),
+        dark ? Color(36, 255, 255, 255) : Color(255, 218, 218, 226));
+    g.FillPath(&body, &path);
+    const Pen outline(Color(dark ? 80 : 0, 0, 0, 0), 1.8f);
+    g.DrawPath(&outline, &path);
+    const Pen rim(Color(dark ? 130 : 0, 255, 255, 255), 1.0f);
+    g.DrawPath(&rim, &path);
 }
 
 static CRect RenderScaledMenuItem(const ScaledMenuItem& item, MEASUREITEMSTRUCT* measure, DRAWITEMSTRUCT* draw)
@@ -152,7 +196,7 @@ static CRect RenderScaledMenuItem(const ScaledMenuItem& item, MEASUREITEMSTRUCT*
     DrawTextW(dc, shortcut.data(), static_cast<int>(shortcut.size()), &shortcutSize,
         DT_SINGLELINE | DT_CALCRECT | DT_NOPREFIX);
     const int gutter = ScaleForDpi(16, item.owner) + ScaleForScreenDpi(4, item.owner);
-    const int padding = ScaleForScreenDpi(2, item.owner);
+    const int padding = ScaleForScreenDpi(item.menuBar ? 2 : 6, item.owner);
     if (measure != nullptr)
     {
         measure->itemWidth = captionSize.Width() + (item.menuBar ? padding * 4 : gutter * 2) +
@@ -165,13 +209,14 @@ static CRect RenderScaledMenuItem(const ScaledMenuItem& item, MEASUREITEMSTRUCT*
     const bool disabled = (draw->itemState & (ODS_DISABLED | ODS_GRAYED | ODS_INACTIVE)) != 0;
     const COLORREF background = DarkMode::SystemColor(selected ? COLOR_3DLIGHT :
         item.menuBar ? COLOR_MENUBAR : COLOR_MENU);
-    const COLORREF foreground = DarkMode::SystemColor(disabled ? COLOR_GRAYTEXT : COLOR_MENUTEXT);
-    const CBrush brush(DarkMode::SystemColor(item.menuBar ? COLOR_MENUBAR : COLOR_MENU));
-    FillRect(dc, &draw->rcItem, brush);
+    const bool darkMode = DarkMode::IsDarkModeActive();
+    const COLORREF foreground = disabled ? (darkMode ? RGB(130, 136, 150) : RGB(140, 146, 160))
+                                         : (darkMode ? RGB(236, 238, 244) : RGB(30, 34, 44));
+    PaintGlassMenuBackground(dc, CRect(draw->rcItem), item.menuBar, item.owner);
     CRect rect(draw->rcItem);
     if (separator)
     {
-        const CBrush line(DarkMode::SystemColor(COLOR_3DLIGHT));
+        const CBrush line(darkMode ? RGB(90, 96, 116) : RGB(176, 184, 204));
         rect.Deflate(ScaleForScreenDpi(8, item.owner), 0);
         rect.top += rect.Height() / 2;
         rect.bottom = rect.top + 1;
@@ -181,12 +226,8 @@ static CRect RenderScaledMenuItem(const ScaledMenuItem& item, MEASUREITEMSTRUCT*
     if (selected)
     {
         CRect highlight(rect);
-        highlight.Deflate(ScaleForScreenDpi(2, item.owner), ScaleForScreenDpi(1, item.owner));
-        const CBrush highlightBrush(background);
-        const GdiObjectSelection selectBrush(dc, &highlightBrush);
-        const StockObjectSelection selectPen(dc, NULL_PEN);
-        const int corner = ScaleForScreenDpi(8, item.owner);
-        RoundRect(dc, highlight.left, highlight.top, highlight.right, highlight.bottom, corner, corner);
+        highlight.Deflate(ScaleForScreenDpi(4, item.owner), ScaleForScreenDpi(2, item.owner));
+        DrawGlassMenuPill(dc, highlight, ScaleForScreenDpi(8, item.owner), darkMode);
     }
 
     SetTextColor(dc, foreground);
@@ -367,9 +408,9 @@ static LRESULT CALLBACK ScaledMenuSubclass(const HWND window, const UINT message
         MENUBARINFO menu{ .cbSize = sizeof(menu) };
         if (GetMenuBarInfo(popup, OBJID_CLIENT, 0, &menu) && s_scaledMenuBackgrounds.contains(menu.hMenu))
         {
-            const DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUNDSMALL;
+            const DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
             DwmSetWindowAttribute(popup, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
-            const COLORREF border = DarkMode::SystemColor(COLOR_3DLIGHT);
+            const COLORREF border = DarkMode::IsDarkModeActive() ? RGB(70, 76, 96) : RGB(255, 255, 255);
             DwmSetWindowAttribute(popup, DWMWA_BORDER_COLOR, &border, sizeof(border));
             SetWindowSubclass(popup, ScaledMenuPopupSubclass, 1, 0);
             const CWindowDC dc{ WindowRef(popup) };

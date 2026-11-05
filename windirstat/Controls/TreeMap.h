@@ -342,23 +342,23 @@ protected:
 
     // Standard palette for WinDirStat
     static constexpr std::array DefaultCushionColors = {
-        RGB(  0,   0, 255),  // Blue
-        RGB(255,   0,   0),  // Red
-        RGB(  0, 255,   0),  // Green
-        RGB(255, 255,   0),  // Yellow
-        RGB(  0, 255, 255),  // Cyan
-        RGB(255,   0, 255),  // Magenta
-        RGB(255, 170,   0),  // Orange
-        RGB(  0,  85, 255),  // Dodger Blue
-        RGB(255,   0,  85),  // Hot Pink
-        RGB( 85, 255,   0),  // Lime Green
-        RGB(170,   0, 255),  // Violet
-        RGB(  0, 255,  85),  // Spring Green
-        RGB(255,   0, 170),  // Deep Pink
-        RGB(  0, 170, 255),  // Sky Blue
-        RGB(255,  85,   0),  // Orange Red
-        RGB(  0, 255, 170),  // Aquamarine
-        RGB( 85,   0, 255),  // Indigo
+        RGB( 76, 139, 245),  // Blue
+        RGB(229, 115, 107),  // Coral
+        RGB( 93, 187, 138),  // Mint
+        RGB(242, 184,  75),  // Amber
+        RGB( 77, 182, 198),  // Teal
+        RGB(176, 124, 198),  // Orchid
+        RGB(240, 154,  91),  // Apricot
+        RGB(108, 142, 232),  // Periwinkle
+        RGB(232, 127, 163),  // Rose
+        RGB(140, 195,  94),  // Sage
+        RGB(155, 138, 224),  // Lavender
+        RGB( 79, 195, 168),  // Seafoam
+        RGB(212, 111, 176),  // Magenta Rose
+        RGB( 90, 174, 230),  // Sky
+        RGB(232, 128,  90),  // Salmon
+        RGB( 84, 191, 160),  // Aqua
+        RGB(122, 127, 224),  // Indigo
         RGB(255, 255, 255),  // White
     };
 

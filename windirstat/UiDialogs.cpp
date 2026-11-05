@@ -5,11 +5,31 @@
 // Distributed WITHOUT ANY WARRANTY; see LICENSE.md for details.
 
 #include "pch.h"
+#include "GlassUi.h"
 
-HBRUSH CDialog::OnCtlColor(CDC* pDC, WindowRef, const UINT nCtlColor)
+HBRUSH CDialog::OnCtlColor(CDC* pDC, WindowRef pWnd, const UINT nCtlColor)
 {
     const HBRUSH brush = DarkMode::OnCtlColor(pDC, nCtlColor);
+
+    // Labels and check/radio buttons sit directly on the glass backdrop
+    if (nCtlColor == CTLCOLOR_STATIC && pWnd.Handle() != nullptr)
+    {
+        std::array<WCHAR, 16> className{};
+        GetClassNameW(pWnd.Handle(), className.data(), static_cast<int>(className.size()));
+        if (_wcsicmp(className.data(), L"Static") == 0 || _wcsicmp(className.data(), L"Button") == 0)
+        {
+            GlassTheme::PaintBackdrop(pDC->Handle(), pWnd.Handle());
+            SetBkMode(pDC->Handle(), TRANSPARENT);
+            return static_cast<HBRUSH>(GetStockObject(NULL_BRUSH));
+        }
+    }
     return brush ? brush : reinterpret_cast<HBRUSH>(CallDefaultHandler());
+}
+
+bool CDialog::OnEraseBkgnd(CDC* pDC)
+{
+    GlassTheme::PaintBackdrop(pDC->Handle(), m_hWnd);
+    return true;
 }
 
 std::optional<std::wstring> CDialog::PickFile(const FilePickerMode mode, std::wstring filter, WindowRef parent)
@@ -255,8 +275,7 @@ bool CPropertySheet::ApplyPages(const UINT command)
 
 bool CPropertySheet::OnEraseBkgnd(CDC* pDC) const
 {
-    const CRect rc = GetClientRect();
-    pDC->FillSolidRect(rc, DarkMode::SystemColor(COLOR_BTNFACE));
+    GlassTheme::PaintBackdrop(pDC->Handle(), m_hWnd);
     return true;
 }
 
@@ -325,6 +344,22 @@ bool CPropertySheet::OnInitDialog()
     if (GetPageCount() > 0) SelectPage(0);
     UpdateApplyButton();
     CenterWindow();
+
+    // Glass mirror of this sheet (the sheet itself keeps all logic but becomes invisible)
+    GlassUi::SheetHooks hooks;
+    hooks.sheet = m_hWnd;
+    hooks.caption = m_caption;
+    hooks.pageCount = GetPageCount();
+    hooks.title = [this](const int i)
+    {
+        const std::wstring key(m_tab.GetTabLabel(i));
+        const std::wstring& translated = Localization::Lookup(key);
+        return translated.empty() ? key : translated;
+    };
+    hooks.select = [this](const int i) { return SelectPage(i); };
+    hooks.active = [this] { return GetActivePageIndex(); };
+    hooks.page = [this](const int i) { return i >= 0 && i < GetPageCount() ? m_pages[i]->Handle() : nullptr; };
+    GlassUi::AttachSheet(hooks);
     return true;
 }
 

@@ -130,6 +130,7 @@ public:
 
     // CTreeListItem Interface
     bool DrawSubItem(int subitem, CDC* pdc, CRect rc, UINT state, int* width, int* focusLeft) override;
+    void GetGlassCell(int subitem, GlassCell& cell) override;
     std::wstring GetText(int subitem) const override;
     COLORREF GetItemTextColor() const override;
     int CompareSibling(const CTreeListItem* tlib, int subitem) const override;
