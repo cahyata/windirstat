@@ -5,6 +5,7 @@
 // Distributed WITHOUT ANY WARRANTY; see LICENSE.md for details.
 
 #include "pch.h"
+#include "GlassUi.h"
 
 static int ReadWindowsTextScalePercent() noexcept
 {
@@ -930,6 +931,27 @@ UINT MenuRef::ShowPopup(const UINT flags, const POINT pt, WindowRef window,
     const LPTPMPARAMS lptpm) const
 {
     const HWND owner = window.Handle();
+
+    // Our own menus are drawn as glass; Explorer shell menus (ids in the shell range) stay classic
+    if (owner != nullptr)
+    {
+        bool shellMenu = false;
+        for (int position = 0; position < GetMenuItemCount(m_hMenu) && !shellMenu; ++position)
+        {
+            MENUITEMINFOW info{ .cbSize = sizeof(info), .fMask = MIIM_ID };
+            shellMenu = GetMenuItemInfoW(m_hMenu, position, true, &info) &&
+                info.wID >= CONTENT_MENU_MINCMD && info.wID <= CONTENT_MENU_MAXCMD;
+        }
+        if (!shellMenu)
+        {
+            const bool returnCommand = (flags & TPM_RETURNCMD) != 0;
+            UINT chosen = 0;
+            int unused = GlassUi::kSwitchNone;
+            if (GlassUi::TrackMenu(owner, m_hMenu, pt, 0, {}, unused, flags, !returnCommand, &chosen))
+                return returnCommand ? chosen : (chosen != 0 ? 1u : 0u);
+        }
+    }
+
     if (owner != nullptr) SetWindowSubclass(owner, ScaledMenuSubclass, 1, 0);
     return TrackPopupMenuEx(m_hMenu, flags | (Localization::IsRightToLeft() ? TPM_LAYOUTRTL : 0),
         pt.x, pt.y, owner, lptpm);

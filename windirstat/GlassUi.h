@@ -50,4 +50,17 @@ namespace GlassUi
     // Turns a (now hidden) classic single-page dialog into a glass window mirroring its controls. The dialog keeps
     // running all of its logic; the glass buttons click the real ones. Returns false if the GPU UI is unavailable.
     bool AttachDialog(HWND dialog, const std::wstring& caption);
+
+    // Glass popup for an HMENU (commands, states and accelerator texts come from the real menu). The chosen command is
+    // posted to `owner` as WM_COMMAND. `barHit` maps a screen point to an adjacent menu bar item (or -1); moving there,
+    // clicking there, or pressing Left / Right at the top level sets `switchTo` to that item (or kSwitchPrev / kSwitchNext).
+    // `initIndex` is the position passed along with WM_INITMENUPOPUP and the bar item that is currently open.
+    // Returns false when the GPU UI is unavailable (the caller should fall back to TrackPopupMenu).
+    inline constexpr int kSwitchNone = -2;
+    inline constexpr int kSwitchPrev = -100;
+    inline constexpr int kSwitchNext = -101;
+    // `align` takes TPM_RIGHTALIGN / TPM_BOTTOMALIGN / TPM_CENTERALIGN. With postCommand false the id is only returned
+    // through `command` (TPM_RETURNCMD behaviour).
+    bool TrackMenu(HWND owner, HMENU menu, POINT screen, int initIndex, const std::function<int(POINT)>& barHit, int& switchTo,
+        UINT align = 0, bool postCommand = true, UINT* command = nullptr);
 }

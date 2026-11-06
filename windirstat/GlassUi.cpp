@@ -201,6 +201,64 @@ namespace
     // ---------------------------------------------------------------------------------------------
     struct GlassWindow;
 
+    // Translucent glass slab: tinted body, soft edge shade and a bright specular rim
+    inline void g_lensDraw(Gfx& g, const D2D1_RECT_F& r, const float radius, const float a, const D2D1_POINT_2F& light)
+    {
+        g.Gradient(r, radius, ColorF(1, 1, 1, 0.26f * a), ColorF(1, 1, 1, 0.06f * a));
+        g.Stroke(r, radius, ColorF(0.2f, 0.22f, 0.35f, 0.07f * a), 1.0f);
+
+        // Light that follows the cursor: a soft glow inside the slab and a rim that brightens on the near edge
+        const float reach = std::max(r.right - r.left, 90.0f) * 0.75f;
+        ComPtr<ID2D1RoundedRectangleGeometry> shape;
+        ComPtr<ID2D1GradientStopCollection> glowStops, rimStops;
+        ComPtr<ID2D1RadialGradientBrush> glow, rimLight;
+        const D2D1_GRADIENT_STOP glowGradient[] = {
+            { 0.0f, ColorF(1, 1, 1, 0.55f * a) }, { 0.4f, ColorF(1, 1, 1, 0.20f * a) }, { 1.0f, ColorF(1, 1, 1, 0.0f) } };
+        const D2D1_GRADIENT_STOP rimGradient[] = { { 0.0f, ColorF(1, 1, 1, 1.0f * a) }, { 1.0f, ColorF(1, 1, 1, 0.0f) } };
+        if (SUCCEEDED(g.factory->CreateRoundedRectangleGeometry(D2D1::RoundedRect(r, radius, radius), &shape)) &&
+            SUCCEEDED(g.dc->CreateGradientStopCollection(glowGradient, 3, &glowStops)) &&
+            SUCCEEDED(g.dc->CreateGradientStopCollection(rimGradient, 2, &rimStops)) &&
+            SUCCEEDED(g.dc->CreateRadialGradientBrush(D2D1::RadialGradientBrushProperties(light, D2D1::Point2F(0, 0), reach * 0.8f, reach * 0.8f), glowStops.Get(), &glow)) &&
+            SUCCEEDED(g.dc->CreateRadialGradientBrush(D2D1::RadialGradientBrushProperties(light, D2D1::Point2F(0, 0), reach, reach), rimStops.Get(), &rimLight)))
+        {
+            g.dc->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(), shape.Get()), nullptr);
+            g.dc->FillRectangle(r, glow.Get());
+            g.dc->PopLayer();
+            g.dc->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(r.left + 0.8f, r.top + 0.8f, r.right - 0.8f, r.bottom - 0.8f), radius, radius),
+                rimLight.Get(), 2.0f);
+        }
+        g.Rim(r, radius, 0.45f * a);
+    }
+
+    // Four edges (left, top, right, bottom) chasing a target rectangle. The leading edge is stiffer than the
+    // trailing one, so the shape stretches while it travels and settles with a little overshoot (liquid feel).
+    struct Spring
+    {
+        std::array<float, 4> x{}, v{}, t{};
+        bool init = false;
+        void Snap(const D2D1_RECT_F& r) { x = t = { r.left, r.top, r.right, r.bottom }; v = {}; init = true; }
+        void Target(const D2D1_RECT_F& r) { t = { r.left, r.top, r.right, r.bottom }; if (!init) Snap(r); }
+        void Step()
+        {
+            // Critically damped per edge (no overshoot). The leading edge is only slightly quicker than the
+            // trailing one, which gives a gentle stretch while travelling without any wobble.
+            const float dx = (t[0] + t[2]) / 2 - (x[0] + x[2]) / 2, dy = (t[1] + t[3]) / 2 - (x[1] + x[3]) / 2;
+            constexpr float lead = 24.0f, trail = 19.0f, dt = 1.0f / 60.0f;
+            const std::array<float, 4> w{ dx < 0 ? lead : trail, dy < 0 ? lead : trail, dx > 0 ? lead : trail, dy > 0 ? lead : trail };
+            for (size_t i = 0; i < 4; ++i)
+            {
+                v[i] += (w[i] * w[i] * (t[i] - x[i]) - 2.0f * w[i] * v[i]) * dt;
+                x[i] += v[i] * dt;
+            }
+        }
+        bool Moving() const
+        {
+            for (size_t i = 0; i < 4; ++i) if (std::fabs(t[i] - x[i]) > 0.2f || std::fabs(v[i]) > 4.0f) return true;
+            return false;
+        }
+        D2D1_RECT_F Rect() const { return D2D1::RectF(x[0], x[1], x[2], x[3]); }
+    };
+
     struct Widget
     {
         D2D1_RECT_F r{};
@@ -211,6 +269,8 @@ namespace
         virtual ~Widget() = default;
         virtual void Draw(Gfx& g) = 0;
         virtual void OnClick(float /*x*/, float /*y*/) {}
+        // Area the sliding glass lens should settle on while the cursor is over this widget
+        virtual bool LensRect(float /*x*/, float /*y*/, D2D1_RECT_F& /*out*/) { return false; }
         virtual void OnMove(float /*x*/, float /*y*/) {}
         virtual bool Animated() { return false; }
         virtual void Wheel(float /*delta*/) {}
@@ -255,6 +315,7 @@ namespace
         std::function<void()> action;
         Button() { interactive = true; }
         void OnClick(float, float) override { if (enabled && action) action(); }
+        bool LensRect(float, float, D2D1_RECT_F& out) override { if (!enabled) return false; out = r; return true; }
         void Draw(Gfx& g) override
         {
             const float alpha = enabled ? 1.0f : 0.45f;
@@ -296,6 +357,7 @@ namespace
         float on = 0;
         Check() { interactive = true; }
         void OnClick(float, float) override { if (enabled && changed) changed(); }
+        bool LensRect(float, float, D2D1_RECT_F& out) override { if (!enabled) return false; out = r; return true; }
         bool Animated() override { return std::fabs((checked ? 1.0f : 0.0f) - on) > 0.01f; }
         void Draw(Gfx& g) override
         {
@@ -638,6 +700,7 @@ namespace
         std::function<void()> open;
         Combo() { interactive = true; }
         void OnClick(float, float) override { if (enabled && open) open(); }
+        bool LensRect(float, float, D2D1_RECT_F& out) override { if (!enabled) return false; out = r; return true; }
         void Draw(Gfx& g) override
         {
             const float alpha = enabled ? 1.0f : 0.5f;
@@ -751,7 +814,14 @@ namespace
         std::vector<D2D1_RECT_F> rects;
         int selected = 0;
         std::function<void(int)> chosen;
+        Spring pill;
         TabBar() { interactive = true; }
+        bool Animated() override { return pill.Moving(); }
+        bool LensRect(float x, float y, D2D1_RECT_F& out) override
+        {
+            for (const auto& tab : rects) if (Inside(tab, x, y)) { out = tab; return true; }
+            return false;
+        }
         void OnClick(float x, float y) override
         {
             for (size_t i = 0; i < rects.size(); ++i)
@@ -776,9 +846,16 @@ namespace
                 const D2D1_RECT_F tab = D2D1::RectF(x, r.top + 5, x + w, r.bottom - 5);
                 rects.push_back(tab);
                 const bool sel = static_cast<int>(i) == selected;
-                if (sel) g.Gradient(tab, (tab.bottom - tab.top) / 2, ColorF(0.82f, 0.82f, 0.86f, 0.95f), ColorF(0.77f, 0.77f, 0.82f, 0.95f));
+                if (sel) { pill.Target(tab); pill.Step(); }
                 g.Text(tabs[i], tab, 14, sel ? ColorF(0.04f, 0.52f, 1.0f) : kInkSoft, sel ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER);
                 x += w;
+            }
+            // The selection pill glides to the chosen tab (drawn under the labels' next frame, above the bar)
+            if (pill.init)
+            {
+                const D2D1_RECT_F p = pill.Rect();
+                g.Gradient(p, (p.bottom - p.top) / 2, ColorF(0.82f, 0.82f, 0.86f, 0.55f), ColorF(0.77f, 0.77f, 0.82f, 0.55f));
+                g.Rim(p, (p.bottom - p.top) / 2, 0.6f);
             }
         }
     };
@@ -944,6 +1021,8 @@ namespace
         bool dirty = true, quitOnClose = false, closed = false;
         std::vector<std::unique_ptr<Widget>> widgets;
         Widget* hotWidget = nullptr;
+        Spring lens;
+        float lensAlpha = 0, mouseX = -1, mouseY = -1, lightX = 0, lightY = 0;
         Widget* pressedWidget = nullptr;
         Widget* focusWidget = nullptr;
         std::unique_ptr<PopupList> popup;
@@ -1131,11 +1210,42 @@ namespace
         }
         if (frameSync && frameSync()) dirty = true;
         if (popup) animating |= popup->Tick();
+
+        // Liquid glass lens: slides between hovered controls, fades out when the cursor leaves them
+        D2D1_RECT_F lensTarget{};
+        const bool hasLens = !popup && hotWidget != nullptr && hotWidget->enabled && hotWidget->visible &&
+            hotWidget->LensRect(mouseX, mouseY, lensTarget);
+        if (hasLens)
+        {
+            if (lensAlpha < 0.05f) lens.Snap(lensTarget);
+            lens.Target(lensTarget);
+        }
+        const float alphaTarget = hasLens ? 1.0f : 0.0f;
+        lensAlpha += (alphaTarget - lensAlpha) * 0.2f;
+        if (std::fabs(alphaTarget - lensAlpha) < 0.01f) lensAlpha = alphaTarget;
+        if (lens.init && lensAlpha > 0.0f)
+        {
+            lens.Step();
+            // The light trails the cursor a little, so it glides instead of snapping
+            if (hasLens)
+            {
+                if (lensAlpha < 0.05f) { lightX = mouseX; lightY = mouseY; }
+                lightX += (mouseX - lightX) * 0.22f;
+                lightY += (mouseY - lightY) * 0.22f;
+            }
+            animating |= lens.Moving() || lensAlpha != alphaTarget || (hasLens && (std::fabs(mouseX - lightX) > 0.3f || std::fabs(mouseY - lightY) > 0.3f));
+        }
         if (!dirty && !animating) return;
         dirty = animating;
         gfx.dc->BeginDraw();
         gfx.dc->Clear(ColorF(0, 0, 0, 0));
         for (auto& widget : widgets) if (widget->visible) widget->Draw(gfx);
+        if (lens.init && lensAlpha > 0.01f)
+        {
+            const D2D1_RECT_F l = lens.Rect();
+            const float radius = std::min((l.bottom - l.top) / 2, 22.0f), a = lensAlpha;
+            g_lensDraw(gfx, l, radius, a, D2D1::Point2F(std::clamp(lightX, l.left, l.right), std::clamp(lightY, l.top, l.bottom)));
+        }
         if (popup) popup->Draw(gfx);
         if (FAILED(gfx.dc->EndDraw())) return;
         swap->Present(0, 0);
@@ -1353,6 +1463,8 @@ namespace
                     return 0;
                 }
                 if (window->pressedWidget) window->pressedWidget->OnDrag(x, y);
+                window->mouseX = x;
+                window->mouseY = y;
                 Widget* hit = window->HitTest(x, y);
                 if (hit != window->hotWidget)
                 {
@@ -2186,5 +2298,507 @@ bool GlassUi::AttachDialog(const HWND dialog, const std::wstring& caption)
         return false;
     }
     SetWindowSubclass(dialog, SheetSubclass, 0x6C73, reinterpret_cast<DWORD_PTR>(host.release()));
+    return true;
+}
+
+// ---------------------------------------------------------------------------------------------
+//  Glass popup menu: draws an HMENU with Direct2D. Commands, state updates (WM_INITMENUPOPUP) and the
+//  accelerator texts all come from the real menu, so nothing but the look changes.
+// ---------------------------------------------------------------------------------------------
+namespace
+{
+    struct MenuEntry
+    {
+        std::wstring text, accel;
+        wchar_t mnemonic = 0;
+        UINT id = 0;
+        HMENU sub = nullptr;
+        bool separator = false, disabled = false, checked = false, radio = false, bold = false;
+    };
+
+    struct MenuSession;
+
+    struct MenuPopup
+    {
+        MenuSession* session = nullptr;
+        HMENU menu = nullptr;
+        int level = 0;
+        GlassWindow gw;
+        std::vector<MenuEntry> entries;
+        std::vector<D2D1_RECT_F> rects;      // popup-local, in DIPs
+        float width = 0, height = 0;         // DIPs
+        POINT origin{};                      // screen pixels
+        int hot = -1;
+        int openChild = -1;                  // entry whose submenu is open
+        Spring lens;
+        float lensAlpha = 0;
+        ULONGLONG born = 0;
+        UINT align = 0;
+
+        static constexpr float kItem = 32, kSep = 11, kPadY = 8, kPadX = 6;
+
+        float Scale() const { return gw.dpi / 96.0f; }
+        bool Create(const HWND owner, const int initIndex, POINT at, float parentWidthPx, float parentLeftPx, bool flipPreferred);
+        int ItemAt(const POINT screen) const
+        {
+            const float x = static_cast<float>(screen.x - origin.x) / Scale(), y = static_cast<float>(screen.y - origin.y) / Scale();
+            for (size_t i = 0; i < rects.size(); ++i)
+                if (!entries[i].separator && Inside(rects[i], x, y)) return static_cast<int>(i);
+            return -1;
+        }
+        bool Contains(const POINT screen) const
+        {
+            return screen.x >= origin.x && screen.x < origin.x + static_cast<int>(width * Scale()) &&
+                screen.y >= origin.y && screen.y < origin.y + static_cast<int>(height * Scale());
+        }
+        bool Selectable(const int i) const { return i >= 0 && i < static_cast<int>(entries.size()) && !entries[i].separator && !entries[i].disabled; }
+        void Render(POINT mouse);
+        ~MenuPopup() { if (gw.hwnd != nullptr) DestroyWindow(gw.hwnd); }
+    };
+
+    struct MenuSession
+    {
+        HWND owner = nullptr;
+        std::vector<std::unique_ptr<MenuPopup>> stack;
+        std::vector<HMENU> opened;
+        std::function<int(POINT)> barHit;
+        int currentBarItem = -1;
+        bool done = false;
+        UINT result = 0;
+        int switchTo = GlassUi::kSwitchNone;
+        POINT mouse{};
+        ULONGLONG closeChildAt = 0;
+        int closeLevel = -1;
+
+        MenuPopup* Top() const { return stack.empty() ? nullptr : stack.back().get(); }
+        MenuPopup* PopupAt(const POINT p) const
+        {
+            for (auto it = stack.rbegin(); it != stack.rend(); ++it) if ((*it)->Contains(p)) return it->get();
+            return nullptr;
+        }
+        void CloseAbove(const int level)
+        {
+            while (static_cast<int>(stack.size()) > level + 1) stack.pop_back();
+            if (!stack.empty()) stack.back()->openChild = -1;
+        }
+        bool OpenSub(MenuPopup& parent, const int index, const bool selectFirst)
+        {
+            CloseAbove(parent.level);
+            auto child = std::make_unique<MenuPopup>();
+            child->session = this;
+            child->menu = parent.entries[static_cast<size_t>(index)].sub;
+            child->level = parent.level + 1;
+            const float s = parent.Scale();
+            const POINT at{ parent.origin.x + static_cast<int>(parent.width * s) - static_cast<int>(4 * s),
+                parent.origin.y + static_cast<int>((parent.rects[static_cast<size_t>(index)].top - MenuPopup::kPadY) * s) };
+            child->gw.dpi = parent.gw.dpi;
+            if (!child->Create(owner, index, at, parent.width * s, static_cast<float>(parent.origin.x), true)) return false;
+            parent.openChild = index;
+            if (selectFirst) for (int i = 0; i < static_cast<int>(child->entries.size()); ++i) if (child->Selectable(i)) { child->hot = i; break; }
+            stack.push_back(std::move(child));
+            return true;
+        }
+        void Activate(MenuPopup& popup, const int index)
+        {
+            if (!popup.Selectable(index)) return;
+            if (popup.entries[static_cast<size_t>(index)].sub != nullptr) { OpenSub(popup, index, true); return; }
+            result = popup.entries[static_cast<size_t>(index)].id;
+            done = true;
+        }
+        void Move(MenuPopup& popup, const int dir)
+        {
+            const int n = static_cast<int>(popup.entries.size());
+            if (n == 0) return;
+            int i = popup.hot;
+            for (int step = 0; step < n; ++step)
+            {
+                i = i < 0 ? (dir > 0 ? 0 : n - 1) : (i + dir + n) % n;
+                if (popup.Selectable(i)) { popup.hot = i; return; }
+            }
+        }
+
+        void OnMouseMove(const POINT p)
+        {
+            mouse = p;
+            MenuPopup* popup = PopupAt(p);
+            if (popup == nullptr)
+            {
+                if (barHit)
+                    if (const int bar = barHit(p); bar >= 0 && bar != currentBarItem) { switchTo = bar; done = true; }
+                return;
+            }
+            const int item = popup->ItemAt(p);
+            if (popup != Top()) closeLevel = -1; // cursor reached a parent level: handled below
+            if (item != popup->hot)
+            {
+                popup->hot = item;
+                if (item >= 0 && popup->entries[static_cast<size_t>(item)].sub != nullptr && !popup->entries[static_cast<size_t>(item)].disabled)
+                {
+                    if (popup->openChild != item) OpenSub(*popup, item, false);
+                }
+                else if (popup->openChild >= 0 && item >= 0)
+                {
+                    // Give the cursor a moment to travel to the open submenu before it is closed
+                    closeLevel = popup->level;
+                    closeChildAt = GetTickCount64() + 220;
+                }
+            }
+            if (popup->level == static_cast<int>(stack.size()) - 1) closeLevel = -1;
+        }
+
+        void OnClick(const POINT p)
+        {
+            MenuPopup* popup = PopupAt(p);
+            if (popup == nullptr)
+            {
+                if (barHit)
+                    if (const int bar = barHit(p); bar >= 0) { switchTo = bar == currentBarItem ? GlassUi::kSwitchNone : bar; }
+                done = true;
+                return;
+            }
+            Activate(*popup, popup->ItemAt(p));
+        }
+
+        void OnKey(const WPARAM vk)
+        {
+            MenuPopup* top = Top();
+            if (top == nullptr) return;
+            switch (vk)
+            {
+            case VK_ESCAPE:
+                if (stack.size() > 1) CloseAbove(top->level - 1); else done = true;
+                break;
+            case VK_DOWN: Move(*top, 1); break;
+            case VK_UP: Move(*top, -1); break;
+            case VK_HOME: top->hot = -1; Move(*top, 1); break;
+            case VK_END: top->hot = -1; Move(*top, -1); break;
+            case VK_RETURN:
+            case VK_SPACE: Activate(*top, top->hot); break;
+            case VK_RIGHT:
+                if (top->Selectable(top->hot) && top->entries[static_cast<size_t>(top->hot)].sub != nullptr) Activate(*top, top->hot);
+                else if (stack.size() == 1) { switchTo = GlassUi::kSwitchNext; done = true; }
+                break;
+            case VK_LEFT:
+                if (stack.size() > 1) CloseAbove(top->level - 1);
+                else { switchTo = GlassUi::kSwitchPrev; done = true; }
+                break;
+            default: break;
+            }
+        }
+
+        void OnChar(const wchar_t ch)
+        {
+            MenuPopup* top = Top();
+            if (top == nullptr) return;
+            const wchar_t key = static_cast<wchar_t>(towupper(ch));
+            std::vector<int> matches;
+            for (int i = 0; i < static_cast<int>(top->entries.size()); ++i)
+                if (top->Selectable(i) && top->entries[static_cast<size_t>(i)].mnemonic == key) matches.push_back(i);
+            if (matches.empty()) return;
+            const auto next = std::ranges::find_if(matches, [top](const int i) { return i > top->hot; });
+            top->hot = next != matches.end() ? *next : matches.front();
+            if (matches.size() == 1) Activate(*top, top->hot);
+        }
+
+        // Returns true when the message was consumed
+        bool Filter(MSG& msg)
+        {
+            switch (msg.message)
+            {
+            case WM_MOUSEMOVE: OnMouseMove(msg.pt); return true;
+            case WM_LBUTTONDOWN: OnClick(msg.pt); return true;
+            case WM_RBUTTONDOWN:
+            case WM_MBUTTONDOWN:
+            case WM_NCLBUTTONDOWN:
+            case WM_NCRBUTTONDOWN:
+                if (PopupAt(msg.pt) == nullptr) { done = true; }
+                return true;
+            case WM_LBUTTONUP:
+            case WM_RBUTTONUP:
+            case WM_MBUTTONUP:
+            case WM_MOUSEWHEEL:
+            case WM_NCMOUSEMOVE:
+                return true;
+            case WM_KEYDOWN:
+                TranslateMessage(&msg);
+                OnKey(msg.wParam);
+                return true;
+            case WM_CHAR:
+                if (msg.wParam >= 32) OnChar(static_cast<wchar_t>(msg.wParam));
+                return true;
+            case WM_SYSKEYDOWN:
+                if (msg.wParam == VK_F4) { done = true; return false; }
+                if (msg.wParam == VK_MENU || msg.wParam == VK_F10) done = true;
+                return true;
+            case WM_KEYUP:
+            case WM_SYSKEYUP:
+            case WM_SYSCHAR:
+                return true;
+            default: return false;
+            }
+        }
+
+        void Tick()
+        {
+            if (closeLevel >= 0 && GetTickCount64() >= closeChildAt)
+            {
+                const int level = closeLevel;
+                closeLevel = -1;
+                if (level < static_cast<int>(stack.size()) - 1) CloseAbove(level);
+            }
+            // A click in another application while the menu is up ends it
+            if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0 || (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0)
+            {
+                DWORD pid = 0;
+                const DWORD thread = GetWindowThreadProcessId(GetForegroundWindow(), &pid);
+                POINT p{};
+                GetCursorPos(&p);
+                if (thread != GetCurrentThreadId() && PopupAt(p) == nullptr) done = true;
+            }
+            for (auto& popup : stack) popup->Render(mouse);
+        }
+    };
+
+    LRESULT CALLBACK MenuPopupProc(const HWND hwnd, const UINT message, const WPARAM wParam, const LPARAM lParam)
+    {
+        switch (message)
+        {
+        case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
+        case WM_ERASEBKGND: return 1;
+        case WM_PAINT: ValidateRect(hwnd, nullptr); return 0;
+        case WM_NCHITTEST: return HTCLIENT;
+        default: return DefWindowProcW(hwnd, message, wParam, lParam);
+        }
+    }
+
+    bool MenuPopup::Create(const HWND owner, const int initIndex, POINT at, const float parentWidthPx, const float parentLeftPx, const bool flipPreferred)
+    {
+        // States are refreshed by the owner (enabled / checked / texts) just like for a classic popup
+        if (menu == nullptr) return false;
+        SendMessageW(owner, WM_INITMENUPOPUP, reinterpret_cast<WPARAM>(menu), MAKELPARAM(initIndex, 0));
+        session->opened.push_back(menu);
+
+        const int count = GetMenuItemCount(menu);
+        for (int i = 0; i < count; ++i)
+        {
+            std::array<WCHAR, 256> buffer{};
+            MENUITEMINFOW info{ .cbSize = sizeof(info), .fMask = MIIM_FTYPE | MIIM_STATE | MIIM_ID | MIIM_SUBMENU };
+            if (!GetMenuItemInfoW(menu, static_cast<UINT>(i), TRUE, &info)) continue;
+            MenuEntry entry;
+            entry.separator = (info.fType & MFT_SEPARATOR) != 0;
+            entry.disabled = (info.fState & (MFS_DISABLED | MFS_GRAYED)) != 0;
+            entry.checked = (info.fState & MFS_CHECKED) != 0;
+            entry.radio = (info.fType & MFT_RADIOCHECK) != 0;
+            entry.bold = (info.fState & MFS_DEFAULT) != 0;
+            entry.sub = info.hSubMenu;
+            entry.id = info.wID;
+            GetMenuStringW(menu, static_cast<UINT>(i), buffer.data(), static_cast<int>(buffer.size()) - 1, MF_BYPOSITION);
+            std::wstring raw = buffer.data();
+            if (const size_t tab = raw.find(L'\t'); tab != std::wstring::npos) { entry.accel = raw.substr(tab + 1); raw.resize(tab); }
+            for (size_t c = 0; c < raw.size(); ++c)
+            {
+                if (raw[c] == L'&' && c + 1 < raw.size() && raw[c + 1] == L'&') { entry.text.push_back(L'&'); ++c; }
+                else if (raw[c] == L'&' && c + 1 < raw.size()) { if (entry.mnemonic == 0) entry.mnemonic = static_cast<wchar_t>(towupper(raw[c + 1])); }
+                else entry.text.push_back(raw[c]);
+            }
+            if (entry.separator) entry.text.clear();
+            entries.push_back(std::move(entry));
+        }
+        if (entries.empty()) return false;
+
+        // The classic window class carries the shadow; acrylic and rounded corners come from DWM
+        static ATOM s_atom = 0;
+        if (s_atom == 0)
+        {
+            WNDCLASSEXW wc{ sizeof(wc) };
+            wc.style = CS_DROPSHADOW;
+            wc.lpfnWndProc = MenuPopupProc;
+            wc.hInstance = GetModuleHandleW(nullptr);
+            wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+            wc.lpszClassName = L"WdsGlassMenu";
+            s_atom = RegisterClassExW(&wc);
+            if (s_atom == 0) return false;
+        }
+        gw.hwnd = CreateWindowExW(kExNoRedirectionBitmap | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE, L"WdsGlassMenu", nullptr,
+            WS_POPUP, at.x, at.y, 8, 8, owner, nullptr, GetModuleHandleW(nullptr), nullptr);
+        if (gw.hwnd == nullptr) return false;
+        const MARGINS margins{ -1, -1, -1, -1 };
+        DwmExtendFrameIntoClientArea(gw.hwnd, &margins);
+        const int backdrop = 3; // DWMSBT_TRANSIENTWINDOW (acrylic)
+        DwmSetWindowAttribute(gw.hwnd, 38, &backdrop, sizeof(backdrop));
+        const DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
+        DwmSetWindowAttribute(gw.hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
+        if (!gw.Init()) return false;
+
+        // Measure and lay out (DIPs)
+        float textW = 0, accelW = 0;
+        bool anySub = false;
+        for (const auto& e : entries)
+        {
+            textW = std::max(textW, gw.gfx.Measure(e.text, 14.0f));
+            accelW = std::max(accelW, gw.gfx.Measure(e.accel, 13.0f));
+            anySub |= e.sub != nullptr;
+        }
+        width = std::max(200.0f, 34.0f + textW + (accelW > 0 ? 28.0f + accelW : 0.0f) + (anySub ? 30.0f : 16.0f) + 2 * kPadX);
+        float y = kPadY;
+        for (const auto& e : entries)
+        {
+            const float h = e.separator ? kSep : kItem;
+            rects.push_back(D2D1::RectF(kPadX, y, width - kPadX, y + h));
+            y += h;
+        }
+        height = y + kPadY;
+
+        // Place on the monitor containing the anchor, flipping / shifting to stay visible
+        const float s = Scale();
+        const int wPx = static_cast<int>(std::ceil(width * s)), hPx = static_cast<int>(std::ceil(height * s));
+        MONITORINFO mi{ sizeof(mi) };
+        GetMonitorInfoW(MonitorFromPoint(at, MONITOR_DEFAULTTONEAREST), &mi);
+        const RECT work = mi.rcWork;
+        if ((align & TPM_RIGHTALIGN) != 0) at.x -= wPx;
+        else if ((align & TPM_CENTERALIGN) != 0) at.x -= wPx / 2;
+        if ((align & TPM_BOTTOMALIGN) != 0) at.y -= hPx;
+        else if ((align & TPM_VCENTERALIGN) != 0) at.y -= hPx / 2;
+        if (at.x + wPx > work.right)
+            at.x = flipPreferred ? static_cast<int>(parentLeftPx) - wPx + static_cast<int>(4 * s) : work.right - wPx;
+        if (at.y + hPx > work.bottom) at.y = std::max<int>(work.top, work.bottom - hPx);
+        at.x = std::max<int>(work.left, at.x);
+        at.y = std::max<int>(work.top, at.y);
+        origin = at;
+        SetWindowPos(gw.hwnd, HWND_TOPMOST, at.x, at.y, wPx, hPx, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        gw.Resize();
+        born = GetTickCount64();
+        (void)parentWidthPx;
+        return true;
+    }
+
+    void MenuPopup::Render(const POINT mouse)
+    {
+        if (!gw.swap || !gw.gfx.dc) return;
+        Gfx& g = gw.gfx;
+        const float s = Scale();
+        const float mx = static_cast<float>(mouse.x - origin.x) / s, my = static_cast<float>(mouse.y - origin.y) / s;
+
+        // Lens follows the highlighted entry
+        const bool has = hot >= 0 && Selectable(hot);
+        if (has)
+        {
+            const D2D1_RECT_F r = D2D1::RectF(rects[static_cast<size_t>(hot)].left + 2, rects[static_cast<size_t>(hot)].top + 1,
+                rects[static_cast<size_t>(hot)].right - 2, rects[static_cast<size_t>(hot)].bottom - 1);
+            if (lensAlpha < 0.05f) lens.Snap(r);
+            lens.Target(r);
+        }
+        lensAlpha += ((has ? 1.0f : 0.0f) - lensAlpha) * 0.3f;
+        if (std::fabs((has ? 1.0f : 0.0f) - lensAlpha) < 0.01f) lensAlpha = has ? 1.0f : 0.0f;
+        if (lens.init && lensAlpha > 0) lens.Step();
+        const float appear = std::clamp(static_cast<float>(GetTickCount64() - born) / 110.0f, 0.0f, 1.0f);
+
+        g.dc->BeginDraw();
+        g.dc->Clear(ColorF(0, 0, 0, 0));
+        g.dc->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(), nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+            D2D1::IdentityMatrix(), appear), nullptr);
+
+        const D2D1_RECT_F body = D2D1::RectF(0, 0, width, height);
+        g.Gradient(body, 12, ColorF(1, 1, 1, 0.66f), ColorF(0.96f, 0.97f, 1.0f, 0.50f));
+        g.Rim(body, 12, 0.7f);
+
+        if (lens.init && lensAlpha > 0.01f)
+        {
+            const D2D1_RECT_F l = lens.Rect();
+            g_lensDraw(g, l, std::min((l.bottom - l.top) / 2, 10.0f), lensAlpha,
+                D2D1::Point2F(std::clamp(mx, l.left, l.right), std::clamp(my, l.top, l.bottom)));
+        }
+
+        for (size_t i = 0; i < entries.size(); ++i)
+        {
+            const MenuEntry& e = entries[i];
+            const D2D1_RECT_F r = rects[i];
+            if (e.separator)
+            {
+                const float cy = (r.top + r.bottom) / 2;
+                g.Fill(D2D1::RectF(r.left + 10, cy - 0.5f, r.right - 10, cy + 0.5f), 0.5f, ColorF(0.2f, 0.22f, 0.35f, 0.14f));
+                continue;
+            }
+            const float alpha = e.disabled ? 0.38f : 1.0f;
+            const ColorF ink(kInk.r, kInk.g, kInk.b, alpha), soft(kInkSoft.r, kInkSoft.g, kInkSoft.b, alpha);
+            if (e.checked)
+            {
+                const float cx = r.left + 17, cy = (r.top + r.bottom) / 2;
+                if (e.radio) g.Fill(D2D1::RectF(cx - 3.5f, cy - 3.5f, cx + 3.5f, cy + 3.5f), 3.5f, ink);
+                else
+                {
+                    g.brush->SetColor(ink);
+                    g.dc->DrawLine(D2D1::Point2F(cx - 5, cy), D2D1::Point2F(cx - 1.5f, cy + 3.5f), g.brush.Get(), 1.8f, g.roundStroke.Get());
+                    g.dc->DrawLine(D2D1::Point2F(cx - 1.5f, cy + 3.5f), D2D1::Point2F(cx + 5, cy - 4), g.brush.Get(), 1.8f, g.roundStroke.Get());
+                }
+            }
+            g.Text(e.text, D2D1::RectF(r.left + 34, r.top, r.right - 12, r.bottom), 14.0f, ink,
+                e.bold ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL);
+            if (!e.accel.empty())
+                g.Text(e.accel, D2D1::RectF(r.left + 34, r.top, r.right - (e.sub != nullptr ? 30.0f : 16.0f), r.bottom), 13.0f, soft,
+                    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_TRAILING);
+            if (e.sub != nullptr)
+            {
+                const float cx = r.right - 16, cy = (r.top + r.bottom) / 2;
+                g.brush->SetColor(soft);
+                g.dc->DrawLine(D2D1::Point2F(cx - 2, cy - 4), D2D1::Point2F(cx + 2, cy), g.brush.Get(), 1.5f, g.roundStroke.Get());
+                g.dc->DrawLine(D2D1::Point2F(cx + 2, cy), D2D1::Point2F(cx - 2, cy + 4), g.brush.Get(), 1.5f, g.roundStroke.Get());
+            }
+        }
+        g.dc->PopLayer();
+        if (FAILED(g.dc->EndDraw())) return;
+        gw.swap->Present(0, 0);
+    }
+}
+
+bool GlassUi::TrackMenu(const HWND owner, const HMENU menu, const POINT screen, const int initIndex,
+    const std::function<int(POINT)>& barHit, int& switchTo, const UINT align, const bool postCommand, UINT* command)
+{
+    if (command != nullptr) *command = 0;
+    switchTo = kSwitchNone;
+    if (owner == nullptr || menu == nullptr) return false;
+
+    MenuSession session;
+    session.owner = owner;
+    session.barHit = barHit;
+    session.currentBarItem = initIndex;
+    auto root = std::make_unique<MenuPopup>();
+    root->session = &session;
+    root->menu = menu;
+    root->gw.dpi = static_cast<float>(GetWindowDpi(owner));
+    root->align = align;
+    if (!root->Create(owner, initIndex, screen, 0, 0, false)) return false;
+    const HWND rootWindow = root->gw.hwnd;
+    session.stack.push_back(std::move(root));
+    SetCapture(rootWindow);
+    GetCursorPos(&session.mouse);
+
+    MSG msg;
+    int quit = -1;
+    while (!session.done)
+    {
+        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+        {
+            if (msg.message == WM_QUIT) { quit = static_cast<int>(msg.wParam); session.done = true; break; }
+            if (!session.Filter(msg))
+            {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            if (session.done) break;
+        }
+        if (session.done) break;
+        if (GetCapture() == nullptr && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) == 0) SetCapture(rootWindow);
+        session.Tick();
+        MsgWaitForMultipleObjects(0, nullptr, FALSE, 16, QS_ALLINPUT);
+    }
+
+    if (GetCapture() == rootWindow) ReleaseCapture();
+    session.stack.clear();
+    for (const HMENU opened : session.opened) SendMessageW(owner, WM_UNINITMENUPOPUP, reinterpret_cast<WPARAM>(opened), MAKELPARAM(0, MF_POPUP));
+    if (quit >= 0) PostQuitMessage(quit);
+    switchTo = session.switchTo;
+    if (command != nullptr) *command = session.result;
+    if (session.result != 0 && postCommand) PostMessageW(owner, WM_COMMAND, MAKEWPARAM(session.result, 0), 0);
     return true;
 }
