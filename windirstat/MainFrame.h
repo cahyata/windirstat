@@ -7,6 +7,7 @@
 #pragma once
 
 #include "pch.h"
+#include "MenuBar.h"
 #include "PacMan.h"
 #include "FileTabbedView.h"
 #include "Dialogs/ProgressDlg.h"
@@ -231,6 +232,7 @@ public:
 
     CStatusBar m_wndStatusBar; // Status bar
     CToolBar m_wndToolBar;     // Toolbar
+    CMenuBar m_menuBar;        // In-client menu bar (the native one is detached)
     bool m_glassActive = false; // Acrylic glass backdrop applied
     CWatcherFilterEdit m_watcherFilter;
     CSize m_defaultButtonSize;  // Toolbar button size at creation, before DPI and size scaling
@@ -268,6 +270,9 @@ protected:
     void OnTimer(UINT_PTR nIDEvent);
     void OnClose();
     void OnInitMenuPopup(MenuRef pPopupMenu, UINT nIndex, bool bSysMenu);
+    LRESULT OnSysCommand(WPARAM wParam, LPARAM lParam);
+    // The menu lives in m_menuBar, not in the window's non-client area
+    MenuRef GetMenu() const { return MenuRef(m_menuBar.Menu()); }
     LRESULT OnMenuCommand(WPARAM position, LPARAM menuHandle);
     void OnSize(UINT nType, int cx, int cy);
     void OnUpdateViewShowVisualization(CCmdUI* pCmdUI) const;
@@ -431,6 +436,7 @@ inline std::span<const RouteEntry> CMainFrame::Routes()
         Route::Window<&OnCreate>(WM_CREATE),
         Route::Window<&OnDestroy>(WM_DESTROY),
         Route::Window<&OnInitMenuPopup>(WM_INITMENUPOPUP),
+        Route::Window<&OnSysCommand>(WM_SYSCOMMAND),
         Route::Window<&OnMenuCommand>(WM_MENUCOMMAND),
         Route::Window<&OnSize>(WM_SIZE),
         Route::Window<&OnSysColorChange>(WM_SYSCOLORCHANGE),

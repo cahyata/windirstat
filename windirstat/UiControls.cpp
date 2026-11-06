@@ -1020,6 +1020,30 @@ void CSplitterWnd::DrawBackground(CDC& dc, const CRect& rect) const
     (void)rect;
 }
 
+bool CSplitterWnd::BuildGlassSplitter(const HWND frame, GlassSplitter& out) const
+{
+    if (!IsWindow(m_hWnd) || !::IsWindowVisible(m_hWnd) || !::IsChild(frame, m_hWnd)) return false;
+    if (GetPane(0) == nullptr || GetPane(1) == nullptr) return false;
+    RECT bar = SplitterRect();
+    if (bar.right - bar.left <= 0 || bar.bottom - bar.top <= 0) return false;
+    ::MapWindowPoints(m_hWnd, frame, reinterpret_cast<POINT*>(&bar), 2);
+    out.bar = bar;
+    out.vertical = IsVertical();
+    out.tracking = m_bTracking;
+    POINT cursor{};
+    ::GetCursorPos(&cursor);
+    ::ScreenToClient(frame, &cursor);
+    out.hot = m_bTracking || (cursor.x >= bar.left && cursor.x < bar.right && cursor.y >= bar.top && cursor.y < bar.bottom &&
+        ::WindowFromPoint([&] { POINT p = cursor; ::ClientToScreen(frame, &p); return p; }()) == m_hWnd);
+    out.id = static_cast<int>(0x20000000 | ((reinterpret_cast<uintptr_t>(m_hWnd) >> 2) & 0xFFFF));
+    size_t hash = 1469598103934665603ull;
+    for (const int v : { static_cast<int>(bar.left), static_cast<int>(bar.top), static_cast<int>(bar.right), static_cast<int>(bar.bottom),
+        static_cast<int>(out.hot), static_cast<int>(out.tracking) })
+        hash = (hash ^ static_cast<size_t>(v)) * 1099511628211ull;
+    out.hash = hash;
+    return true;
+}
+
 void CSplitterWnd::OnPaint()
 {
     CPaintDC dc(this);
@@ -1621,6 +1645,49 @@ bool CTabControl::GetNativeItemRect(const int native, CRect& rc) const
     if (SendNativeMessage(TCM_GETITEMRECT, static_cast<WPARAM>(native), &r) == 0) return false;
     rc = r;
     return true;
+}
+
+bool CTabControl::BuildGlassStrip(const HWND frame, GlassTabStrip& out)
+{
+    if (!IsWindow(m_hWnd) || !::IsWindowVisible(m_hWnd) || !::IsChild(frame, m_hWnd) || UsesLabelOnlyTabs()) return false;
+    const CRect strip = TabStripRect();
+    UpdatePaintedTabRects(strip, m_location == Location::Bottom, false);
+    const auto toFrame = [&](RECT rc)
+    {
+        ::MapWindowPoints(m_hWnd, frame, reinterpret_cast<POINT*>(&rc), 2);
+        return rc;
+    };
+    out.strip = toFrame(strip);
+    out.pane = out.strip;
+    if (const HWND pane = ::GetParent(m_hWnd); pane != nullptr)
+    {
+        RECT pr{};
+        ::GetWindowRect(pane, &pr);
+        ::MapWindowPoints(nullptr, frame, reinterpret_cast<POINT*>(&pr), 2);
+        out.pane = pr;
+    }
+    out.paneRadius = GlassTheme::CardRadius;
+    out.dark = DarkMode::IsDarkModeActive();
+    LOGFONT font{};
+    ::GetObjectW(GetFont() != nullptr ? GetFont() : GetAppFont(m_hWnd), sizeof(font), &font);
+    out.fontPx = std::max(8, std::abs(static_cast<int>(font.lfHeight)));
+    size_t hash = 1469598103934665603ull;
+    const auto mix = [&hash](const size_t v) { hash = (hash ^ v) * 1099511628211ull; };
+    for (const int logical : m_visibleToLogical)
+    {
+        if (logical < 0 || logical >= GetTabCount() || !m_tabs[logical].visible) continue;
+        GlassTab tab;
+        tab.rect = toFrame(m_tabs[logical].paintedRect);
+        tab.label = m_tabs[logical].label;
+        tab.active = logical == m_activeTab;
+        mix(static_cast<size_t>(tab.rect.left)); mix(static_cast<size_t>(tab.rect.right)); mix(static_cast<size_t>(tab.active));
+        mix(std::hash<std::wstring>{}(tab.label));
+        out.tabs.push_back(std::move(tab));
+    }
+    mix(static_cast<size_t>(out.strip.left)); mix(static_cast<size_t>(out.strip.top)); mix(static_cast<size_t>(out.strip.right));
+    mix(static_cast<size_t>(out.dark));
+    out.hash = hash;
+    return !out.tabs.empty();
 }
 
 CRect CTabControl::TabStripRect() const

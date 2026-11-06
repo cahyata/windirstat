@@ -19,9 +19,14 @@ class CItem;
 class CTreeMapView final : public CGraphView
 {
 public:
-    CTreeMapView() = default;
+    CTreeMapView() { Live().push_back(this); }
 
-    ~CTreeMapView() override = default;
+    ~CTreeMapView() override { std::erase(Live(), this); }
+
+    static std::vector<CTreeMapView*>& Live() { static std::vector<CTreeMapView*> live; return live; }
+    // Snapshot of selection and hover for the GPU compositor (coordinates relative to `frame`)
+    bool BuildGlassHighlights(HWND frame, GlassTreeMap& out);
+    bool GetHighlightRect(const CItem* item, bool single, CRect& rc) const;
 
     const wchar_t* GetWindowClassName() const override
     {

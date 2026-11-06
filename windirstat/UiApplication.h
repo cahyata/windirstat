@@ -361,6 +361,7 @@ public:
 
     void SetBaseTitle(std::wstring title) { m_strTitle = std::move(title); }
     void SetLayoutMargin(const int margin) { m_layoutMargin = margin; UpdateLayout(); }
+    void SetMenuBar(CWnd* bar) { m_menuBar = bar; UpdateLayout(); }
     void SetTopBar(CWnd* bar) { m_topBar = bar; UpdateLayout(); }
     void SetBottomBar(CWnd* bar) { m_bottomBar = bar; UpdateLayout(); }
     void OnIdleUpdateCmdUI() override
@@ -403,6 +404,7 @@ protected:
 private:
     HACCEL m_hAccelTable = nullptr;
     std::wstring m_strTitle;
+    CWnd* m_menuBar = nullptr;
     CWnd* m_topBar = nullptr;
     CWnd* m_bottomBar = nullptr;
     int m_layoutMargin = 0;
@@ -463,6 +465,13 @@ inline void CFrameWnd::UpdateLayout()
     if (!IsWindow(m_hWnd)) return;
     const CRect rc = GetClientRect();
     int top = rc.top, bottom = rc.bottom;
+    if (m_menuBar != nullptr && IsWindow(m_menuBar->m_hWnd) && m_menuBar->IsWindowVisible())
+    {
+        const CSize size = m_menuBar->PreferredSize();
+        m_menuBar->SetWindowPos(nullptr, rc.left + m_layoutMargin, top, std::max(0, rc.Width() - 2 * m_layoutMargin), size.cy,
+            SWP_NOZORDER | SWP_NOACTIVATE);
+        top += size.cy;
+    }
     if (m_topBar != nullptr && IsWindow(m_topBar->m_hWnd) && m_topBar->IsWindowVisible())
     {
         const CSize size = m_topBar->PreferredSize();
@@ -488,6 +497,7 @@ inline void CFrameWnd::UpdateLayout()
         {
             // Backdrop is stretched to the frame, so everything on it must repaint on resize
             Invalidate(false);
+            if (m_menuBar != nullptr && IsWindow(m_menuBar->m_hWnd)) m_menuBar->Invalidate(false);
             if (m_topBar != nullptr && IsWindow(m_topBar->m_hWnd)) m_topBar->Invalidate(false);
             if (m_bottomBar != nullptr && IsWindow(m_bottomBar->m_hWnd)) m_bottomBar->Invalidate(false);
             client.Invalidate(false);

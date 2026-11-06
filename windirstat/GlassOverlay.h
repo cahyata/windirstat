@@ -52,6 +52,10 @@ struct GlassRow
 
 struct GlassLayer
 {
+    std::vector<GlassMenuBar> menuBars;
+    std::vector<GlassTabStrip> tabStrips;
+    std::vector<GlassSplitter> splitters;
+    std::vector<GlassTreeMap> treeMaps;
     std::vector<std::shared_ptr<const GlassListView>> lists;   // lists painted completely by the compositor
     std::vector<GlassRow> rows;
     std::vector<GlassRegion> regions;

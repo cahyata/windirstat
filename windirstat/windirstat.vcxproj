@@ -269,6 +269,7 @@ POWERSHELL.EXE -NoLogo -ExecutionPolicy Unrestricted -NoProfile -File "$(Project
     <ClCompile Include="CsvLoader.cpp" />
     <ClCompile Include="DarkMode.cpp" />
     <ClCompile Include="GlassOverlay.cpp" />
+    <ClCompile Include="MenuBar.cpp" />
     <ClCompile Include="GlassUi.cpp" />
     <ClCompile Include="UiAppearance.cpp" />
     <ClCompile Include="UiControls.cpp" />

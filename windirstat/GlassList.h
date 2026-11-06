@@ -85,3 +85,67 @@ struct GlassListView
     GlassScrollBar vscroll, hscroll;
     size_t hash = 0;
 };
+
+// A tab strip (segmented control): the classic control keeps hit testing and selection logic
+struct GlassTab
+{
+    RECT rect{};
+    std::wstring label;
+    bool active = false;
+};
+
+struct GlassTabStrip
+{
+    RECT pane{};                     // rounded pane that contains the strip
+    RECT strip{};
+    int paneRadius = 22;
+    std::vector<GlassTab> tabs;
+    int fontPx = 14;
+    bool dark = false;
+    size_t hash = 0;
+};
+
+// Selection and hover state of the treemap for the compositor (the cushions themselves stay classic)
+struct GlassTreeMap
+{
+    RECT clip{};                     // treemap window
+    RECT pane{};                     // rounded pane containing it
+    int paneRadius = 22;
+    std::vector<RECT> selected;
+    bool single = false;             // exactly one item selected (animated outline)
+    bool hasHover = false;
+    RECT hover{};
+    COLORREF color = 0;              // highlight colour
+    bool dark = false;
+    size_t hash = 0;
+};
+
+// A splitter bar: the overlay draws a grip pill that swells on hover and lights up while dragging
+struct GlassSplitter
+{
+    RECT bar{};
+    bool vertical = false;           // bar is a vertical strip (panes side by side)
+    bool hot = false;
+    bool tracking = false;
+    int id = 0;
+    size_t hash = 0;
+};
+
+// The in-client menu bar: item labels with hover / open state, painted by the compositor
+struct GlassMenuItem
+{
+    RECT rect{};
+    std::wstring label;
+    bool hot = false;
+    bool open = false;
+};
+
+struct GlassMenuBar
+{
+    RECT bar{};
+    std::vector<GlassMenuItem> items;
+    int fontPx = 14;
+    COLORREF text = 0;
+    bool dark = false;
+    size_t hash = 0;
+};

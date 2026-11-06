@@ -7,6 +7,7 @@
 #include "pch.h"
 #include "GlassOverlay.h"
 #include "VisualizationPane.h"
+#include "TreeMapView.h"
 #include "FileTabbedView.h"
 #include "FileTreeView.h"
 #include "ExtensionView.h"
@@ -497,6 +498,15 @@ int CMainFrame::OnCreate(const LPCREATESTRUCT lpCreateStruct)
 
     UpdatePaneText();
 
+    // Menu bar inside the client area: detach the native one and keep its menu for the popups
+    if (m_menuBar.Create(this))
+    {
+        HMENU nativeMenu = ::GetMenu(Handle());
+        ::SetMenu(Handle(), nullptr);
+        m_menuBar.Attach(nativeMenu);
+        SetMenuBar(&m_menuBar);
+    }
+
     m_wndToolBar.Create(this);
     m_wndToolBar.ModifyStyle(0, WS_CLIPCHILDREN);
     if (!m_watcherFilter.Create(WS_CHILD | WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL,
@@ -568,6 +578,34 @@ int CMainFrame::OnCreate(const LPCREATESTRUCT lpCreateStruct)
                     enabled && hot == i, enabled && (b.fsState & TBSTATE_PRESSED) != 0, (b.fsState & TBSTATE_CHECKED) != 0 });
             }
         }
+        // Menu bar labels and hover lens are painted by the compositor
+        for (CMenuBar* menuBar : CMenuBar::Live())
+        {
+            GlassMenuBar bar;
+            if (menuBar->BuildGlassBar(Handle(), bar)) layer.menuBars.push_back(std::move(bar));
+        }
+
+        // Splitter grips are painted by the compositor
+        for (const CSplitterWnd* splitter : CSplitterWnd::Live())
+        {
+            GlassSplitter bar;
+            if (splitter->BuildGlassSplitter(Handle(), bar)) layer.splitters.push_back(bar);
+        }
+
+        // Treemap selection and hover are painted by the compositor
+        for (CTreeMapView* view : CTreeMapView::Live())
+        {
+            GlassTreeMap map;
+            if (view->BuildGlassHighlights(Handle(), map)) layer.treeMaps.push_back(std::move(map));
+        }
+
+        // Tab strips are painted by the compositor
+        for (CTabControl* tabs : CTabControl::Live())
+        {
+            GlassTabStrip strip;
+            if (tabs->BuildGlassStrip(Handle(), strip)) layer.tabStrips.push_back(std::move(strip));
+        }
+
         // Glass finish on list rows (the classic list still draws, owns input and keeps its capsule fill)
         {
             POINT cursor{};
@@ -965,4 +1003,16 @@ bool CMainFrame::OnEraseBkgnd(CDC* dc)
 {
     GlassTheme::PaintBackdrop(dc->Handle(), Handle());
     return true;
+}
+
+// Alt alone / Alt + letter / F10 open the in-client menu bar (there is no native bar to do it)
+LRESULT CMainFrame::OnSysCommand(const WPARAM wParam, const LPARAM lParam)
+{
+    if ((wParam & 0xFFF0) == SC_KEYMENU && m_menuBar.Menu() != nullptr && lParam != ' ')
+    {
+        if (lParam == 0) m_menuBar.OpenFirst();
+        else m_menuBar.OpenByMnemonic(static_cast<wchar_t>(lParam));
+        return 0;
+    }
+    return CallDefaultHandler();
 }

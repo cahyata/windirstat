@@ -7,6 +7,7 @@
 #pragma once
 
 #include "UiApplication.h"
+#include "GlassList.h"
 
 // "Liquid glass" theme helpers (aurora backdrop shared by all windows of the main frame)
 namespace GlassTheme
@@ -38,7 +39,11 @@ public:
     static constexpr int PaneBorderSize = 14;
     static constexpr int SplitterSize = 18;
 
-    ~CSplitterWnd() override { DestroyWindow(); }
+    CSplitterWnd() { Live().push_back(this); }
+    ~CSplitterWnd() override { std::erase(Live(), this); DestroyWindow(); }
+    static std::vector<CSplitterWnd*>& Live() { static std::vector<CSplitterWnd*> live; return live; }
+    // Snapshot of the bar for the GPU compositor (coordinates relative to `frame`)
+    bool BuildGlassSplitter(HWND frame, GlassSplitter& out) const;
     bool IsSplitterWindow() const noexcept override { return true; }
 
     bool CreateStatic(CWnd* pParentWnd, const Orientation orientation, const UINT nID = WDS_PANE_ID_BASE)
@@ -560,6 +565,12 @@ class CTabControl : public MessageTarget<CTabControl, CWnd>
 {
 public:
     enum class Location : char { Bottom, Top };
+
+    CTabControl() { Live().push_back(this); }
+    ~CTabControl() override { std::erase(Live(), this); }
+    static std::vector<CTabControl*>& Live() { static std::vector<CTabControl*> live; return live; }
+    // Snapshot for the GPU compositor (coordinates relative to `frame`); false if the strip is not shown
+    bool BuildGlassStrip(HWND frame, GlassTabStrip& out);
 
     bool Create(const RECT& rect, CWnd* pParentWnd, UINT nID, bool focusTabStrip = false);
     int AddTab(CWnd* window, std::wstring_view label);

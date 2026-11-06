@@ -92,6 +92,7 @@ public:
     CTreeListControl(std::vector<int>* columnOrder, std::vector<int>* columnWidths, std::vector<int>* columnVisibility, LOGICAL_FOCUS logicalFocus, bool blockFirstColumnReorder);
     ~CTreeListControl() override;
     virtual bool CreateExtended(DWORD dwExStyle, DWORD dwStyle, const RECT& rect, CWnd* pParentWnd, UINT nID);
+    bool GlassRenderable() const override { return true; }  // every tree list describes its cells through GetGlassCell
     virtual void SetRootItem(CTreeListItem* root = nullptr);
     virtual void AfterDeleteAllItems() {}
     bool DeleteAllItems();

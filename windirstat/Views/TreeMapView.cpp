@@ -6,6 +6,7 @@
 
 #include "pch.h"
 #include "TreeMapView.h"
+#include "GlassOverlay.h"
 
 void CTreeMapView::DrawEmptyPlaceholder(CDC* pDC, const CRect& rect)
 {
@@ -122,11 +123,9 @@ void CTreeMapView::DrawSelection(CDC* pdc)
 // Draws the highlight rectangle of item. If single, the rectangle is slightly
 // bigger than the item rect; otherwise, it fits inside.
 //
-void CTreeMapView::HighlightSelectedItem(CDC* pdc, const CItem* item, const bool single,
-    const bool hover) const
+bool CTreeMapView::GetHighlightRect(const CItem* item, const bool single, CRect& rc) const
 {
-    CRect rc;
-    if (!m_treeMap.TryGetItemRectangle(item, rc)) return;
+    if (!m_treeMap.TryGetItemRectangle(item, rc)) return false;
 
     // Offset the display rectangle if zoomed
     if (CWinDirStatModel::Get()->IsZoomed())
@@ -148,13 +147,75 @@ void CTreeMapView::HighlightSelectedItem(CDC* pdc, const CItem* item, const bool
         if (rc.right < rcClient.right) rc.right++;
         if (rc.bottom < rcClient.bottom) rc.bottom++;
     }
+    return rc.Width() > 0 && rc.Height() > 0;
+}
 
-    if (rc.Width() <= 0 || rc.Height() <= 0)
-    {
-        return;
-    }
+void CTreeMapView::HighlightSelectedItem(CDC* pdc, const CItem* item, const bool single,
+    const bool hover) const
+{
+    // The GPU compositor draws selection and hover as animated glass
+    if (GlassOverlay::IsActive()) return;
 
+    CRect rc;
+    if (!GetHighlightRect(item, single, rc)) return;
     RenderHighlightRectangle(pdc, rc, hover);
+}
+
+bool CTreeMapView::BuildGlassHighlights(const HWND frame, GlassTreeMap& out)
+{
+    if (!IsWindow(m_hWnd) || !::IsWindowVisible(m_hWnd) || !::IsChild(frame, m_hWnd)) return false;
+    CWinDirStatModel* model = CWinDirStatModel::Get();
+    if (model == nullptr || model->GetRootItem() == nullptr || !HasValidLayout()) return false;
+
+    const auto toFrame = [&](RECT rc)
+    {
+        ::MapWindowPoints(m_hWnd, frame, reinterpret_cast<POINT*>(&rc), 2);
+        return rc;
+    };
+    out.clip = toFrame(GetClientRect());
+    out.pane = out.clip;
+    if (const HWND pane = ::GetParent(m_hWnd); pane != nullptr)
+    {
+        RECT pr{};
+        ::GetWindowRect(pane, &pr);
+        ::MapWindowPoints(nullptr, frame, reinterpret_cast<POINT*>(&pr), 2);
+        out.pane = pr;
+    }
+    out.paneRadius = GlassTheme::CardRadius;
+    out.dark = DarkMode::IsDarkModeActive();
+    out.color = COptions::TreeMapHighlightColor;
+
+    size_t hash = 1469598103934665603ull;
+    const auto mix = [&hash](const size_t v) { hash = (hash ^ v) * 1099511628211ull; };
+    const auto mixRect = [&](const RECT& r)
+    {
+        mix(static_cast<size_t>(r.left)); mix(static_cast<size_t>(r.top)); mix(static_cast<size_t>(r.right)); mix(static_cast<size_t>(r.bottom));
+    };
+
+    const auto& selectedItems = model->GetAllSelected();
+    out.single = selectedItems.size() == 1;
+    for (const CItem* item : selectedItems)
+    {
+        if (!model->GetZoomItem()->IsAncestorOf(item)) continue;
+        CRect rc;
+        if (!GetHighlightRect(GetDisplayItem(item), out.single, rc)) continue;
+        out.selected.push_back(toFrame(rc));
+        mixRect(out.selected.back());
+    }
+    if (m_hoverItem != nullptr)
+    {
+        CRect rc;
+        if (GetHighlightRect(GetDisplayItem(m_hoverItem), false, rc))
+        {
+            out.hasHover = true;
+            out.hover = toFrame(rc);
+            mixRect(out.hover);
+        }
+    }
+    mix(static_cast<size_t>(out.color)); mix(static_cast<size_t>(out.dark));
+    mixRect(out.clip);
+    out.hash = hash;
+    return true;
 }
 
 CItem* CTreeMapView::FindItemAtPoint(const CPoint point)

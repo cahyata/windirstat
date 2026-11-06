@@ -49,6 +49,32 @@ namespace
         bool operator==(const MapKey&) const = default;
     };
 
+    // Four edges chasing a rectangle with critical damping (smooth, no overshoot)
+    struct Edges
+    {
+        std::array<float, 4> x{}, v{}, t{};
+        bool init = false;
+        void Snap(const RECT& r) { x = t = { static_cast<float>(r.left), static_cast<float>(r.top), static_cast<float>(r.right), static_cast<float>(r.bottom) }; v = {}; init = true; }
+        void Target(const RECT& r) { t = { static_cast<float>(r.left), static_cast<float>(r.top), static_cast<float>(r.right), static_cast<float>(r.bottom) }; if (!init) Snap(r); }
+        void Step()
+        {
+            const float dx = (t[0] + t[2]) / 2 - (x[0] + x[2]) / 2, dy = (t[1] + t[3]) / 2 - (x[1] + x[3]) / 2;
+            constexpr float lead = 24.0f, trail = 19.0f, dt = 1.0f / 60.0f;
+            const std::array<float, 4> w{ dx < 0 ? lead : trail, dy < 0 ? lead : trail, dx > 0 ? lead : trail, dy > 0 ? lead : trail };
+            for (size_t i = 0; i < 4; ++i)
+            {
+                v[i] += (w[i] * w[i] * (t[i] - x[i]) - 2.0f * w[i] * v[i]) * dt;
+                x[i] += v[i] * dt;
+            }
+        }
+        bool Moving() const
+        {
+            for (size_t i = 0; i < 4; ++i) if (std::fabs(t[i] - x[i]) > 0.2f || std::fabs(v[i]) > 4.0f) return true;
+            return false;
+        }
+        D2D1_RECT_F Rect() const { return D2D1::RectF(x[0], x[1], x[2], x[3]); }
+    };
+
     struct Overlay
     {
         HWND window{};
@@ -104,6 +130,17 @@ namespace
         IDWriteTextFormat* GetFormat(int px, DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING);
         ID2D1Bitmap1* GetHIcon(HICON icon);
         void DrawList(const GlassListView& view);
+        void DrawTabStrip(const GlassTabStrip& strip);
+        void DrawTreeMap(const GlassTreeMap& map);
+        void DrawSplitter(const GlassSplitter& bar);
+        void DrawMenuBar(const GlassMenuBar& bar);
+        bool StepMenuBar(const std::vector<GlassMenuBar>& bars);
+        Edges menuLens;
+        float menuAlpha = 0, menuStrength = 0;
+        bool StepSplitters(const std::vector<GlassSplitter>& bars);
+        bool StepTreeMap(const GlassTreeMap& map);
+        Edges selectSpring, hoverSpring;
+        float selectAlpha = 0, hoverAlpha = 0;
         void DrawIcon(const GlassIcon& icon);
         void DrawLabel(const GlassText& text);
         bool StepAnimation(const std::vector<GlassIcon>& list);
@@ -613,6 +650,10 @@ namespace
         }
         for (const auto& t : layer.texts) { mixRect(t.rect); mix(std::hash<std::wstring>{}(t.text)); }
         for (const auto& l : layer.lists) mix(l->hash);
+        for (const auto& t : layer.tabStrips) mix(t.hash);
+        for (const auto& m : layer.treeMaps) mix(m.hash);
+        for (const auto& b : layer.splitters) mix(b.hash);
+        for (const auto& b : layer.menuBars) mix(b.hash);
         return h;
     }
 
@@ -883,6 +924,251 @@ namespace
         stroke(rf(v.card), static_cast<float>(v.cardRadius), v.dark ? D2D1::ColorF(1, 1, 1, 0.10f) : D2D1::ColorF(0.24f, 0.28f, 0.42f, 0.12f), 1.2f);
     }
 
+    // Segmented tab strip: soft capsule track, raised white active tab, accent label
+    void Overlay::DrawTabStrip(const GlassTabStrip& s)
+    {
+        const auto rf = [](const RECT& r) { return D2D1::RectF(static_cast<float>(r.left), static_cast<float>(r.top), static_cast<float>(r.right), static_cast<float>(r.bottom)); };
+        ComPtr<ID2D1SolidColorBrush> brush;
+        if (FAILED(dc->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 1), &brush))) return;
+        ComPtr<ID2D1RoundedRectangleGeometry> paneGeometry;
+        if (FAILED(factory->CreateRoundedRectangleGeometry(D2D1::RoundedRect(rf(s.pane), static_cast<float>(s.paneRadius), static_cast<float>(s.paneRadius)), &paneGeometry))) return;
+        const D2D1_RECT_F strip = rf(s.strip);
+        dc->PushAxisAlignedClip(strip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        dc->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(), paneGeometry.Get()), nullptr);
+        brush->SetColor(s.dark ? D2D1::ColorF(0.122f, 0.129f, 0.157f) : D2D1::ColorF(0.988f, 0.988f, 0.996f));
+        dc->FillRectangle(strip, brush.Get());
+
+        // Track hugging the tabs
+        float left = 1e9f, right = -1e9f;
+        for (const auto& t : s.tabs) { left = std::min(left, static_cast<float>(t.rect.left)); right = std::max(right, static_cast<float>(t.rect.right)); }
+        const D2D1_RECT_F track = D2D1::RectF(left + 2, strip.top + 3, right - 2, strip.bottom - 3);
+        const float trackR = (track.bottom - track.top) / 2;
+        brush->SetColor(s.dark ? D2D1::ColorF(1, 1, 1, 0.07f) : D2D1::ColorF(0.24f, 0.28f, 0.42f, 0.08f));
+        dc->FillRoundedRectangle(D2D1::RoundedRect(track, trackR, trackR), brush.Get());
+
+        for (const auto& t : s.tabs)
+        {
+            const D2D1_RECT_F pill = D2D1::RectF(static_cast<float>(t.rect.left) + 3, strip.top + 5, static_cast<float>(t.rect.right) - 3, strip.bottom - 5);
+            const float r = (pill.bottom - pill.top) / 2;
+            if (t.active)
+            {
+                brush->SetColor(D2D1::ColorF(0.15f, 0.18f, 0.3f, 0.10f));
+                dc->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(pill.left, pill.top + 1.2f, pill.right, pill.bottom + 1.2f), r, r), brush.Get());
+                brush->SetColor(s.dark ? D2D1::ColorF(0.30f, 0.32f, 0.40f) : D2D1::ColorF(1, 1, 1));
+                dc->FillRoundedRectangle(D2D1::RoundedRect(pill, r, r), brush.Get());
+                brush->SetColor(D2D1::ColorF(0.24f, 0.28f, 0.42f, 0.14f));
+                dc->DrawRoundedRectangle(D2D1::RoundedRect(pill, r, r), brush.Get(), 1.0f);
+            }
+            if (IDWriteTextFormat* format = GetFormat(s.fontPx, DWRITE_TEXT_ALIGNMENT_CENTER))
+            {
+                brush->SetColor(t.active ? D2D1::ColorF(0.04f, 0.52f, 1.0f) : (s.dark ? D2D1::ColorF(0.78f, 0.8f, 0.84f) : D2D1::ColorF(0.31f, 0.33f, 0.37f)));
+                dc->DrawText(t.label.c_str(), static_cast<UINT32>(t.label.size()), format, pill, brush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            }
+        }
+        dc->PopLayer();
+        dc->PopAxisAlignedClip();
+    }
+
+    // Advances the selection outline and hover lens; true while anything still moves
+    bool Overlay::StepTreeMap(const GlassTreeMap& m)
+    {
+        bool moving = false;
+        const bool hasSelection = m.single && m.selected.size() == 1;
+        if (hasSelection)
+        {
+            if (selectAlpha < 0.05f) selectSpring.Snap(m.selected[0]);
+            selectSpring.Target(m.selected[0]);
+        }
+        selectAlpha += ((hasSelection ? 1.0f : 0.0f) - selectAlpha) * 0.25f;
+        if (std::fabs((hasSelection ? 1.0f : 0.0f) - selectAlpha) < 0.01f) selectAlpha = hasSelection ? 1.0f : 0.0f;
+        if (selectSpring.init && selectAlpha > 0.0f) { selectSpring.Step(); moving |= selectSpring.Moving(); }
+        moving |= selectAlpha != (hasSelection ? 1.0f : 0.0f);
+
+        if (m.hasHover)
+        {
+            if (hoverAlpha < 0.05f) hoverSpring.Snap(m.hover);
+            hoverSpring.Target(m.hover);
+        }
+        hoverAlpha += ((m.hasHover ? 1.0f : 0.0f) - hoverAlpha) * 0.22f;
+        if (std::fabs((m.hasHover ? 1.0f : 0.0f) - hoverAlpha) < 0.01f) hoverAlpha = m.hasHover ? 1.0f : 0.0f;
+        if (hoverSpring.init && hoverAlpha > 0.0f) { hoverSpring.Step(); moving |= hoverSpring.Moving(); }
+        moving |= hoverAlpha != (m.hasHover ? 1.0f : 0.0f);
+        return moving;
+    }
+
+    // Selection becomes a glowing glass outline that glides between items; the hovered item gets a lit glass lens
+    void Overlay::DrawTreeMap(const GlassTreeMap& m)
+    {
+        const auto rf = [](const RECT& r) { return D2D1::RectF(static_cast<float>(r.left), static_cast<float>(r.top), static_cast<float>(r.right), static_cast<float>(r.bottom)); };
+        const auto colorOf = [](const COLORREF c, const float a) { return D2D1::ColorF(GetRValue(c) / 255.0f, GetGValue(c) / 255.0f, GetBValue(c) / 255.0f, a); };
+        ComPtr<ID2D1SolidColorBrush> brush;
+        if (FAILED(dc->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 1), &brush))) return;
+        ComPtr<ID2D1RoundedRectangleGeometry> paneGeometry;
+        if (FAILED(factory->CreateRoundedRectangleGeometry(D2D1::RoundedRect(rf(m.pane), static_cast<float>(m.paneRadius), static_cast<float>(m.paneRadius)), &paneGeometry))) return;
+        dc->PushAxisAlignedClip(rf(m.clip), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        dc->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(), paneGeometry.Get()), nullptr);
+
+        const auto outline = [&](const D2D1_RECT_F& r, const float alpha)
+        {
+            const float radius = std::clamp(std::min(r.right - r.left, r.bottom - r.top) * 0.18f, 2.0f, 9.0f);
+            if (std::min(r.right - r.left, r.bottom - r.top) <= 5.0f)
+            {
+                brush->SetColor(colorOf(m.color, alpha));
+                dc->FillRectangle(r, brush.Get());
+                return;
+            }
+            brush->SetColor(colorOf(m.color, 0.28f * alpha));
+            dc->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(r.left - 1, r.top - 1, r.right + 1, r.bottom + 1), radius + 1, radius + 1), brush.Get(), 5.0f);
+            brush->SetColor(D2D1::ColorF(1, 1, 1, 0.95f * alpha));
+            dc->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(r.left + 1, r.top + 1, r.right - 1, r.bottom - 1), radius, radius), brush.Get(), 2.2f);
+            brush->SetColor(colorOf(m.color, alpha));
+            dc->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(r.left + 2.6f, r.top + 2.6f, r.right - 2.6f, r.bottom - 2.6f), std::max(radius - 1.5f, 1.0f), std::max(radius - 1.5f, 1.0f)), brush.Get(), 1.6f);
+        };
+
+        // Hover lens (under the selection outline)
+        if (hoverSpring.init && hoverAlpha > 0.01f)
+        {
+            const D2D1_RECT_F r = hoverSpring.Rect();
+            const float radius = std::clamp(std::min(r.right - r.left, r.bottom - r.top) * 0.18f, 2.0f, 12.0f), a = hoverAlpha;
+            if (r.right - r.left > 4 && r.bottom - r.top > 4)
+            {
+                ComPtr<ID2D1RoundedRectangleGeometry> shape;
+                ComPtr<ID2D1GradientStopCollection> glowStops, rimStops;
+                ComPtr<ID2D1RadialGradientBrush> glow, rimLight;
+                const D2D1_POINT_2F light = D2D1::Point2F(std::clamp(curX, r.left, r.right), std::clamp(curY, r.top, r.bottom));
+                const float reach = std::max(std::max(r.right - r.left, r.bottom - r.top), 90.0f) * 0.75f;
+                const D2D1_GRADIENT_STOP glowGradient[] = { { 0.0f, D2D1::ColorF(1, 1, 1, 0.42f * a) }, { 0.45f, D2D1::ColorF(1, 1, 1, 0.14f * a) }, { 1.0f, D2D1::ColorF(1, 1, 1, 0.0f) } };
+                const D2D1_GRADIENT_STOP rimGradient[] = { { 0.0f, D2D1::ColorF(1, 1, 1, 1.0f * a) }, { 1.0f, D2D1::ColorF(1, 1, 1, 0.12f * a) } };
+                if (SUCCEEDED(factory->CreateRoundedRectangleGeometry(D2D1::RoundedRect(r, radius, radius), &shape)) &&
+                    SUCCEEDED(dc->CreateGradientStopCollection(glowGradient, 3, &glowStops)) &&
+                    SUCCEEDED(dc->CreateGradientStopCollection(rimGradient, 2, &rimStops)) &&
+                    SUCCEEDED(dc->CreateRadialGradientBrush(D2D1::RadialGradientBrushProperties(light, D2D1::Point2F(0, 0), reach * 0.8f, reach * 0.8f), glowStops.Get(), &glow)) &&
+                    SUCCEEDED(dc->CreateRadialGradientBrush(D2D1::RadialGradientBrushProperties(light, D2D1::Point2F(0, 0), reach, reach), rimStops.Get(), &rimLight)))
+                {
+                    dc->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(), shape.Get()), nullptr);
+                    brush->SetColor(D2D1::ColorF(1, 1, 1, 0.10f * a));
+                    dc->FillRectangle(r, brush.Get());
+                    dc->FillRectangle(r, glow.Get());
+                    dc->PopLayer();
+                    dc->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(r.left + 0.8f, r.top + 0.8f, r.right - 0.8f, r.bottom - 0.8f), radius, radius), rimLight.Get(), 1.8f);
+                }
+            }
+        }
+
+        if (m.single && selectSpring.init && selectAlpha > 0.01f) outline(selectSpring.Rect(), selectAlpha);
+        else if (!m.single) for (const RECT& r : m.selected) outline(rf(r), 1.0f);
+
+        dc->PopLayer();
+        dc->PopAxisAlignedClip();
+    }
+
+    bool Overlay::StepSplitters(const std::vector<GlassSplitter>& bars)
+    {
+        bool moving = false;
+        for (const auto& bar : bars)
+        {
+            auto& [swell, glow] = anim[bar.id];
+            const float th = bar.hot ? 1.0f : 0.0f, tg = bar.tracking ? 1.0f : 0.0f;
+            swell += (th - swell) * 0.25f;
+            glow += (tg - glow) * 0.3f;
+            if (std::fabs(th - swell) < 0.01f) swell = th;
+            if (std::fabs(tg - glow) < 0.01f) glow = tg;
+            moving |= swell != th || glow != tg;
+        }
+        return moving;
+    }
+
+    // Grip pill in the middle of the bar: calm when idle, swells when hovered, turns accent blue while dragging
+    void Overlay::DrawSplitter(const GlassSplitter& bar)
+    {
+        const auto [swell, glow] = anim[bar.id];
+        const float cx = static_cast<float>(bar.bar.left + bar.bar.right) * 0.5f, cy = static_cast<float>(bar.bar.top + bar.bar.bottom) * 0.5f;
+        const float length = 36.0f + 16.0f * swell, thick = 4.0f + 2.0f * swell;
+        const D2D1_RECT_F pill = bar.vertical
+            ? D2D1::RectF(cx - thick / 2, cy - length / 2, cx + thick / 2, cy + length / 2)
+            : D2D1::RectF(cx - length / 2, cy - thick / 2, cx + length / 2, cy + thick / 2);
+        ComPtr<ID2D1SolidColorBrush> brush;
+        if (FAILED(dc->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 1), &brush))) return;
+        const float r = thick / 2;
+        if (swell > 0.01f || glow > 0.01f)
+        {
+            brush->SetColor(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.55f * std::max(swell, glow)));
+            dc->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(pill.left - 1.5f, pill.top - 1.5f, pill.right + 1.5f, pill.bottom + 1.5f), r + 1.5f, r + 1.5f), brush.Get());
+        }
+        const float a = 0.22f + 0.28f * swell;
+        const float rr = 0.24f + (0.04f - 0.24f) * glow, gg = 0.28f + (0.52f - 0.28f) * glow, bb = 0.42f + (1.0f - 0.42f) * glow;
+        brush->SetColor(D2D1::ColorF(rr, gg, bb, a + (0.9f - a) * glow));
+        dc->FillRoundedRectangle(D2D1::RoundedRect(pill, r, r), brush.Get());
+    }
+
+    bool Overlay::StepMenuBar(const std::vector<GlassMenuBar>& bars)
+    {
+        if (bars.empty()) { menuAlpha = 0; return false; }
+        const GlassMenuBar& bar = bars[0];
+        int target = -1;
+        bool open = false;
+        for (size_t i = 0; i < bar.items.size(); ++i) if (bar.items[i].open) { target = static_cast<int>(i); open = true; break; }
+        if (target < 0) for (size_t i = 0; i < bar.items.size(); ++i) if (bar.items[i].hot) { target = static_cast<int>(i); break; }
+        const bool has = target >= 0;
+        if (has)
+        {
+            RECT r = bar.items[static_cast<size_t>(target)].rect;
+            if (menuAlpha < 0.05f) menuLens.Snap(r);
+            menuLens.Target(r);
+        }
+        const float strengthTarget = open ? 1.0f : 0.0f;
+        menuStrength += (strengthTarget - menuStrength) * 0.25f;
+        const float alphaTarget = has ? 1.0f : 0.0f;
+        menuAlpha += (alphaTarget - menuAlpha) * 0.22f;
+        if (std::fabs(alphaTarget - menuAlpha) < 0.01f) menuAlpha = alphaTarget;
+        if (std::fabs(strengthTarget - menuStrength) < 0.01f) menuStrength = strengthTarget;
+        bool moving = menuAlpha != alphaTarget || menuStrength != strengthTarget;
+        if (menuLens.init && menuAlpha > 0.0f) { menuLens.Step(); moving |= menuLens.Moving(); }
+        return moving;
+    }
+
+    // Plain labels; a glass lens glides to the hovered or opened item and carries the cursor light
+    void Overlay::DrawMenuBar(const GlassMenuBar& bar)
+    {
+        ComPtr<ID2D1SolidColorBrush> brush;
+        if (FAILED(dc->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 1), &brush))) return;
+        if (menuLens.init && menuAlpha > 0.01f)
+        {
+            const D2D1_RECT_F r = menuLens.Rect();
+            const float radius = (r.bottom - r.top) / 2, a = menuAlpha, s = menuStrength;
+            brush->SetColor(D2D1::ColorF(1, 1, 1, (0.30f + 0.28f * s) * a));
+            dc->FillRoundedRectangle(D2D1::RoundedRect(r, radius, radius), brush.Get());
+            ComPtr<ID2D1RoundedRectangleGeometry> shape;
+            ComPtr<ID2D1GradientStopCollection> glowStops, rimStops;
+            ComPtr<ID2D1RadialGradientBrush> glow, rimLight;
+            const D2D1_POINT_2F light = D2D1::Point2F(std::clamp(curX, r.left, r.right), std::clamp(curY, r.top, r.bottom));
+            const float reach = std::max(r.right - r.left, 90.0f) * 0.75f;
+            const D2D1_GRADIENT_STOP glowGradient[] = { { 0.0f, D2D1::ColorF(1, 1, 1, 0.55f * a) }, { 0.4f, D2D1::ColorF(1, 1, 1, 0.2f * a) }, { 1.0f, D2D1::ColorF(1, 1, 1, 0.0f) } };
+            const D2D1_GRADIENT_STOP rimGradient[] = { { 0.0f, D2D1::ColorF(1, 1, 1, 1.0f * a) }, { 1.0f, D2D1::ColorF(1, 1, 1, 0.0f) } };
+            if (SUCCEEDED(factory->CreateRoundedRectangleGeometry(D2D1::RoundedRect(r, radius, radius), &shape)) &&
+                SUCCEEDED(dc->CreateGradientStopCollection(glowGradient, 3, &glowStops)) &&
+                SUCCEEDED(dc->CreateGradientStopCollection(rimGradient, 2, &rimStops)) &&
+                SUCCEEDED(dc->CreateRadialGradientBrush(D2D1::RadialGradientBrushProperties(light, D2D1::Point2F(0, 0), reach * 0.8f, reach * 0.8f), glowStops.Get(), &glow)) &&
+                SUCCEEDED(dc->CreateRadialGradientBrush(D2D1::RadialGradientBrushProperties(light, D2D1::Point2F(0, 0), reach, reach), rimStops.Get(), &rimLight)))
+            {
+                dc->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(), shape.Get()), nullptr);
+                dc->FillRectangle(r, glow.Get());
+                dc->PopLayer();
+                dc->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(r.left + 0.8f, r.top + 0.8f, r.right - 0.8f, r.bottom - 0.8f), radius, radius), rimLight.Get(), 1.8f);
+            }
+            brush->SetColor(D2D1::ColorF(0.2f, 0.22f, 0.35f, 0.10f * a));
+            dc->DrawRoundedRectangle(D2D1::RoundedRect(r, radius, radius), brush.Get(), 1.0f);
+        }
+        if (IDWriteTextFormat* format = GetFormat(bar.fontPx, DWRITE_TEXT_ALIGNMENT_CENTER))
+        {
+            brush->SetColor(D2D1::ColorF(GetRValue(bar.text) / 255.0f, GetGValue(bar.text) / 255.0f, GetBValue(bar.text) / 255.0f));
+            for (const auto& item : bar.items)
+                dc->DrawText(item.label.c_str(), static_cast<UINT32>(item.label.size()), format,
+                    D2D1::RectF(static_cast<float>(item.rect.left), static_cast<float>(item.rect.top), static_cast<float>(item.rect.right), static_cast<float>(item.rect.bottom)),
+                    brush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        }
+    }
+
     void Overlay::Render()
     {
         if (failed || dc == nullptr || IsIconic(window) || !IsWindowVisible(window)) return;
@@ -896,6 +1182,10 @@ namespace
         const std::vector<GlassRegion>& regions = layer.regions;
         animating = StepAnimation(layer.icons);
         animating |= StepRows(layer.rows);
+        for (const auto& m : layer.treeMaps) animating |= StepTreeMap(m);
+        animating |= StepSplitters(layer.splitters);
+        animating |= StepMenuBar(layer.menuBars);
+        if (layer.treeMaps.empty()) { selectAlpha = hoverAlpha = 0; }
         const size_t signature = Signature(layer);
         const bool layerChanged = signature != lastSignature;
 
@@ -922,6 +1212,10 @@ namespace
         dc->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
         if (source != nullptr) for (const auto& region : regions) DrawRegion(region, source, curX, curY);
         for (const auto& list : layer.lists) DrawList(*list);
+        for (const auto& strip : layer.tabStrips) DrawTabStrip(strip);
+        for (const auto& map : layer.treeMaps) DrawTreeMap(map);
+        for (const auto& bar : layer.splitters) DrawSplitter(bar);
+        for (const auto& bar : layer.menuBars) DrawMenuBar(bar);
         for (const auto& row : layer.rows)
         {
             const D2D1_RECT_F clip = D2D1::RectF(static_cast<float>(row.clip.left), static_cast<float>(row.clip.top),
