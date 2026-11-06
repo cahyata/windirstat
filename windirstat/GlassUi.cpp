@@ -271,6 +271,7 @@ namespace
         virtual void OnClick(float /*x*/, float /*y*/) {}
         // Area the sliding glass lens should settle on while the cursor is over this widget
         virtual bool LensRect(float /*x*/, float /*y*/, D2D1_RECT_F& /*out*/) { return false; }
+        virtual float LensRadius() const { return 22.0f; }   // corner radius of the lens (clamped to a pill)
         virtual void OnMove(float /*x*/, float /*y*/) {}
         virtual bool Animated() { return false; }
         virtual void Wheel(float /*delta*/) {}
@@ -358,7 +359,8 @@ namespace
         float on = 0;
         Check() { interactive = true; }
         void OnClick(float, float) override { if (enabled && changed) changed(); }
-        bool LensRect(float, float, D2D1_RECT_F& out) override { if (!enabled) return false; out = r; return true; }
+        bool LensRect(float x, float y, D2D1_RECT_F& out) override;
+        float LensRadius() const override { return 11.0f; }
         bool Animated() override { return std::fabs((checked ? 1.0f : 0.0f) - on) > 0.01f; }
         void Draw(Gfx& g) override
         {
@@ -1006,6 +1008,7 @@ namespace
         static constexpr float kRow = 30, kHeader = 34;
         std::function<void(int)> chosen;
         std::function<void(int)> activated;
+        std::wstring placeholder;                      // shown in the body while the list is empty
         ULONGLONG lastClick = 0;
         int lastClickRow = -1;
         ListMirror() { interactive = true; }
@@ -1049,6 +1052,11 @@ namespace
                     g.Text(rows[i][c], D2D1::RectF(r.left + cols[c].left + 8, y, r.left + cols[c].right - 8, y + kRow), 13.5f,
                         sel ? ColorF(1, 1, 1) : kInk, DWRITE_FONT_WEIGHT_NORMAL,
                         cols[c].rightAligned ? DWRITE_TEXT_ALIGNMENT_TRAILING : DWRITE_TEXT_ALIGNMENT_LEADING);
+            }
+            if (count == 0 && !placeholder.empty())
+            {
+                const D2D1_RECT_F body = D2D1::RectF(r.left + 24, r.top + kHeader + 8, r.right - 24, r.bottom - 12);
+                g.Text(placeholder, body, 15, kInkSoft, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER);
             }
             g.dc->PopAxisAlignedClip();
             if (count > Visible())
@@ -1178,7 +1186,7 @@ namespace
         std::vector<std::unique_ptr<Widget>> widgets;
         Widget* hotWidget = nullptr;
         Spring lens;
-        float lensAlpha = 0, mouseX = -1, mouseY = -1, lightX = 0, lightY = 0;
+        float lensAlpha = 0, mouseX = -1, mouseY = -1, lightX = 0, lightY = 0, lensRadius = 22;
         Widget* pressedWidget = nullptr;
         Widget* focusWidget = nullptr;
         std::unique_ptr<PopupList> popup;
@@ -1375,6 +1383,10 @@ namespace
         {
             if (lensAlpha < 0.05f) lens.Snap(lensTarget);
             lens.Target(lensTarget);
+            const float wanted = hotWidget->LensRadius();
+            lensRadius += (wanted - lensRadius) * 0.3f;
+            if (std::fabs(wanted - lensRadius) < 0.05f) lensRadius = wanted;
+            animating |= lensRadius != wanted;
         }
         const float alphaTarget = hasLens ? 1.0f : 0.0f;
         lensAlpha += (alphaTarget - lensAlpha) * 0.2f;
@@ -1399,12 +1411,23 @@ namespace
         if (lens.init && lensAlpha > 0.01f)
         {
             const D2D1_RECT_F l = lens.Rect();
-            const float radius = std::min((l.bottom - l.top) / 2, 22.0f), a = lensAlpha;
+            const float radius = std::min((l.bottom - l.top) / 2, lensRadius), a = lensAlpha;
             g_lensDraw(gfx, l, radius, a, D2D1::Point2F(std::clamp(lightX, l.left, l.right), std::clamp(lightY, l.top, l.bottom)));
         }
         if (popup) popup->Draw(gfx);
         if (FAILED(gfx.dc->EndDraw())) return;
         swap->Present(0, 0);
+    }
+
+    // Checkbox rows: the lens hugs the box and its label instead of spanning the whole row
+    bool Check::LensRect(float, float, D2D1_RECT_F& out)
+    {
+        if (!enabled) return false;
+        const float textW = host != nullptr ? host->gfx.Measure(text, 14.0f) : 0.0f;
+        const float cy = (r.top + r.bottom) / 2, h = std::min(r.bottom - r.top, 34.0f);
+        const float left = r.left - 10.0f, right = std::min(r.right, r.left + 30.0f + textW + 12.0f);
+        out = D2D1::RectF(left, cy - h / 2, std::max(right, left + 60.0f), cy + h / 2);
+        return true;
     }
 
     void Field::OnClick(const float x, const float y)
@@ -2033,7 +2056,8 @@ namespace
                     };
                     const float sx = scaleX, hostK = k;
                     auto lastRead = std::make_shared<ULONGLONG>(0);
-                    mirror->syncFn = [this, mirror, child, sx, hostK, lastRead]
+                    const HWND statusLine = id == IDC_REMOTE_RECENT ? GetDlgItem(page, IDC_REMOTE_STATUS) : nullptr;
+                    mirror->syncFn = [this, mirror, child, sx, hostK, lastRead, statusLine]
                     {
                         bool ch = SyncBase(*mirror, child);
                         if (mirror->visible)
@@ -2095,6 +2119,11 @@ namespace
                         mirror->selected = std::move(selected);
                         mirror->cols = std::move(cols);
                         mirror->count = count;
+                        if (statusLine != nullptr)
+                        {
+                            const std::wstring text = count == 0 ? StripMnemonic(WindowText(statusLine)) : std::wstring{};
+                            if (text != mirror->placeholder) { mirror->placeholder = text; ch = true; }
+                        }
                         return ch;
                     };
                     continue;
@@ -2154,11 +2183,25 @@ namespace
                         const D2D1_RECT_F rect = rectOf(child, 40, minW);
                         auto* button = window.Add<Button>(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top);
                         button->hasSwatch = GetWindow(child, GW_CHILD) != nullptr; // colour picker button
-                        button->action = [child] { SendMessageW(child, BM_CLICK, 0, 0); };
+                        button->primary = (style & BS_TYPEMASK) == BS_DEFPUSHBUTTON;
+                        const HWND recentList = id == IDC_REMOTE_NEW ? GetDlgItem(page, IDC_REMOTE_RECENT) : nullptr;
+                        // Plain push buttons report the click to their dialog the way the button itself would; a simulated
+                        // BM_CLICK is ignored by some of them. Colour pickers keep the simulated click.
+                        button->action = [child, id, picker = button->hasSwatch]
+                        {
+                            if (picker) { SendMessageW(child, BM_CLICK, 0, 0); return; }
+                            if (!IsWindowEnabled(child)) return;
+                            SendMessageW(GetParent(child), WM_COMMAND, MAKEWPARAM(id, BN_CLICKED), reinterpret_cast<LPARAM>(child));
+                        };
                         auto lastSwatch = std::make_shared<ULONGLONG>(0);
-                        button->syncFn = [button, child, lastSwatch]
+                        button->syncFn = [button, child, lastSwatch, recentList]
                         {
                             bool ch = SyncBase(*button, child);
+                            if (recentList != nullptr)
+                            {
+                                const bool lead = ListView_GetItemCount(recentList) == 0;
+                                if (lead != button->primary) { button->primary = lead; ch = true; }
+                            }
                             std::wstring t = StripMnemonic(WindowText(child));
                             if ((GetWindowLongPtrW(child, GWL_STYLE) & BS_ICON) != 0)
                             {
@@ -2218,15 +2261,36 @@ namespace
                     if ((style & SS_TYPEMASK) != SS_LEFT && (style & SS_TYPEMASK) != SS_CENTER && (style & SS_TYPEMASK) != SS_RIGHT &&
                         (style & SS_TYPEMASK) != SS_LEFTNOWORDWRAP) continue;
                     const D2D1_RECT_F rect = rectOf(child, 26, 0);
+                    LOGFONTW labelFont{};
+                    const HFONT realFont = reinterpret_cast<HFONT>(SendMessageW(child, WM_GETFONT, 0, 0));
+                    const bool heading = realFont != nullptr && GetObjectW(realFont, sizeof(labelFont), &labelFont) != 0 && labelFont.lfWeight >= 600;
+                    if (heading)
+                    {
+                        // Bold captions become a semibold single line
+                        auto* title = window.Add<Label>(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top);
+                        title->size = 15.5f;
+                        title->weight = DWRITE_FONT_WEIGHT_SEMI_BOLD;
+                        title->syncFn = [title, child]
+                        {
+                            bool ch = SyncBase(*title, child);
+                            const std::wstring t = StripMnemonic(WindowText(child));
+                            if (t != title->text) { title->text = t; ch = true; }
+                            return ch;
+                        };
+                        continue;
+                    }
                     auto* label = window.Add<WrapLabel>(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top);
                     label->text = StripMnemonic(WindowText(child));
                     if (const float needed = window.gfx.MeasureWrapped(label->text, 14.5f, label->r.right - label->r.left) + 6.0f;
                         needed > label->r.bottom - label->r.top) label->r.bottom = label->r.top + needed;
-                    label->syncFn = [label, child]
+                    const HWND emptyList = id == IDC_REMOTE_STATUS ? GetDlgItem(page, IDC_REMOTE_RECENT) : nullptr;
+                    label->syncFn = [label, child, emptyList]
                     {
                         bool ch = SyncBase(*label, child);
                         const std::wstring t = StripMnemonic(WindowText(child));
                         if (t != label->text) { label->text = t; ch = true; }
+                        // The empty list already says it: the status line below would only repeat it
+                        if (emptyList != nullptr && ListView_GetItemCount(emptyList) == 0 && label->visible) { label->visible = false; ch = true; }
                         return ch;
                     };
                 }
