@@ -236,8 +236,22 @@ namespace
     struct Spring
     {
         std::array<float, 4> x{}, v{}, t{};
+        std::array<float, 4> p{};          // lens left behind on the previous control
+        float prevAlpha = 0;
         bool init = false;
         void Snap(const D2D1_RECT_F& r) { x = t = { r.left, r.top, r.right, r.bottom }; v = {}; init = true; }
+        // Stay on the control: a new target replaces the lens in place, the previous one fades away where it was
+        void Jump(const D2D1_RECT_F& r, float& alpha)
+        {
+            const std::array<float, 4> n{ r.left, r.top, r.right, r.bottom };
+            if (!init) { Snap(r); return; }
+            if (n == t) return;
+            if (alpha > 0.03f) { p = x; prevAlpha = alpha; }
+            Snap(r);
+            alpha = 0.0f;
+        }
+        void StepPrev() { prevAlpha *= 0.68f; if (prevAlpha < 0.02f) prevAlpha = 0.0f; }
+        D2D1_RECT_F PrevRect() const { return D2D1::RectF(p[0], p[1], p[2], p[3]); }
         void Target(const D2D1_RECT_F& r) { t = { r.left, r.top, r.right, r.bottom }; if (!init) Snap(r); }
         void Step()
         {
@@ -1443,8 +1457,7 @@ namespace
             hotWidget->LensRect(mouseX, mouseY, lensTarget);
         if (hasLens)
         {
-            if (lensAlpha < 0.05f) lens.Snap(lensTarget);
-            lens.Target(lensTarget);
+            lens.Jump(lensTarget, lensAlpha);
             const float wanted = hotWidget->LensRadius();
             lensRadius += (wanted - lensRadius) * 0.3f;
             if (std::fabs(wanted - lensRadius) < 0.05f) lensRadius = wanted;
@@ -1453,6 +1466,8 @@ namespace
         const float alphaTarget = hasLens ? 1.0f : 0.0f;
         lensAlpha += (alphaTarget - lensAlpha) * 0.2f;
         if (std::fabs(alphaTarget - lensAlpha) < 0.01f) lensAlpha = alphaTarget;
+        lens.StepPrev();
+        animating |= lens.prevAlpha > 0.0f;
         if (lens.init && lensAlpha > 0.0f)
         {
             lens.Step();
@@ -1469,6 +1484,12 @@ namespace
         dirty = animating;
         BeginScene();
         for (auto& widget : widgets) if (widget->visible) widget->Draw(gfx);
+        if (lens.init && lens.prevAlpha > 0.02f)
+        {
+            const D2D1_RECT_F pl = lens.PrevRect();
+            g_lensDraw(gfx, pl, std::min((pl.bottom - pl.top) / 2, lensRadius), lens.prevAlpha,
+                D2D1::Point2F(std::clamp(lightX, pl.left, pl.right), std::clamp(lightY, pl.top, pl.bottom)));
+        }
         if (lens.init && lensAlpha > 0.01f)
         {
             const D2D1_RECT_F l = lens.Rect();
@@ -1950,6 +1971,7 @@ namespace
         float originX = 28, originY = 88, contentRight = 760;
         HWND pageWindow = nullptr;
         float tabBarBottom = 0;
+        std::vector<std::pair<RECT, D2D1_RECT_F>> groupCards;   // real group box (page coordinates) -> its glass card
 
         HWND Real(const int id) const { return GetDlgItem(hooks.sheet, id); }
 
@@ -1961,10 +1983,21 @@ namespace
             GetWindowRect(w, &rc);
             MapWindowPoints(nullptr, pageWindow, reinterpret_cast<POINT*>(&rc), 2);
             const float x = originX + static_cast<float>(rc.left) * k * scaleX, y = originY + static_cast<float>(rc.top) * k * scaleY;
-            const float w2 = std::max(minW, static_cast<float>(rc.right - rc.left) * k * scaleX);
+            float w2 = std::max(minW, static_cast<float>(rc.right - rc.left) * k * scaleX);
             const float h = static_cast<float>(rc.bottom - rc.top) * k * scaleY;
             const float height = std::max(minH, h);
-            const float left = std::min(x, contentRight - w2);
+            float left = std::min(x, contentRight - w2);
+
+            // A control that sits inside a group box stays inside its card even when its minimum size is wider
+            const LONG cx = (rc.left + rc.right) / 2, cy = (rc.top + rc.bottom) / 2;
+            for (const auto& [real, card] : groupCards)
+            {
+                if (cx <= real.left || cx >= real.right || cy <= real.top || cy >= real.bottom) continue;
+                constexpr float inner = 14.0f;
+                w2 = std::min(w2, std::max(40.0f, card.right - card.left - 2 * inner));
+                left = std::clamp(x, card.left + inner, card.right - inner - w2);
+                break;
+            }
             return D2D1::RectF(left, y + (h - height) / 2, left + w2, y + (h - height) / 2 + height);
         }
 
@@ -2002,23 +2035,19 @@ namespace
             collect(collect, page);
             pageWindow = page;
             tabBarBottom = 0;
-            const auto rectOf = [&](const HWND w, const float minH, const float minW)
-            {
-                RECT rc{};
-                GetWindowRect(w, &rc);
-                MapWindowPoints(nullptr, page, reinterpret_cast<POINT*>(&rc), 2);
-                const float x = originX + static_cast<float>(rc.left) * k * scaleX, y = originY + static_cast<float>(rc.top) * k * scaleY;
-                const float w2 = std::max(minW, static_cast<float>(rc.right - rc.left) * k * scaleX);
-                const float h = static_cast<float>(rc.bottom - rc.top) * k * scaleY;
-                const float height = std::max(minH, h);
-                const float left = std::min(x, contentRight - w2);
-                return D2D1::RectF(left, y + (h - height) / 2, left + w2, y + (h - height) / 2 + height);
-            };
+            groupCards.clear();
+            const auto rectOf = [this](const HWND w, const float minH, const float minW) { return RectOf(w, minH, minW); };
             for (const HWND child : children)
             {
                 if (classOf(child) != L"Button" || (GetWindowLongPtrW(child, GWL_STYLE) & BS_TYPEMASK) != BS_GROUPBOX) continue;
                 const D2D1_RECT_F rect = rectOf(child, 0, 0);
                 auto* group = window.Add<GroupCard>(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top);
+                {
+                    RECT realRect{};
+                    GetWindowRect(child, &realRect);
+                    MapWindowPoints(nullptr, page, reinterpret_cast<POINT*>(&realRect), 2);
+                    groupCards.emplace_back(realRect, rect);
+                }
                 group->syncFn = [group, child] { const std::wstring t = StripMnemonic(WindowText(child)); const bool ch = t != group->text; group->text = t; return SyncBase(*group, child) || ch; };
             }
             for (const HWND child : children)
@@ -3208,9 +3237,9 @@ namespace
         {
             const D2D1_RECT_F r = D2D1::RectF(rects[static_cast<size_t>(hot)].left + 2, rects[static_cast<size_t>(hot)].top + 1,
                 rects[static_cast<size_t>(hot)].right - 2, rects[static_cast<size_t>(hot)].bottom - 1);
-            if (lensAlpha < 0.05f) lens.Snap(r);
-            lens.Target(r);
+            lens.Jump(r, lensAlpha);
         }
+        lens.StepPrev();
         lensAlpha += ((has ? 1.0f : 0.0f) - lensAlpha) * 0.3f;
         if (std::fabs((has ? 1.0f : 0.0f) - lensAlpha) < 0.01f) lensAlpha = has ? 1.0f : 0.0f;
         if (lens.init && lensAlpha > 0) lens.Step();
@@ -3224,6 +3253,12 @@ namespace
         g.Gradient(body, 12, ColorF(1, 1, 1, std::min(1.0f, 0.66f * g.surfaceBoost)), ColorF(0.96f, 0.97f, 1.0f, std::min(1.0f, 0.50f * g.surfaceBoost)));
         g.Rim(body, 12, 0.7f);
 
+        if (lens.init && lens.prevAlpha > 0.02f)
+        {
+            const D2D1_RECT_F pl = lens.PrevRect();
+            g_lensDraw(g, pl, std::min((pl.bottom - pl.top) / 2, 10.0f), lens.prevAlpha,
+                D2D1::Point2F(std::clamp(mx, pl.left, pl.right), std::clamp(my, pl.top, pl.bottom)));
+        }
         if (lens.init && lensAlpha > 0.01f)
         {
             const D2D1_RECT_F l = lens.Rect();

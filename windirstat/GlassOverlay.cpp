@@ -53,7 +53,21 @@ namespace
     struct Edges
     {
         std::array<float, 4> x{}, v{}, t{};
+        std::array<float, 4> p{};          // lens left behind on the previous control
+        float prevAlpha = 0;
         bool init = false;
+        // Stay on the control: a new target replaces the lens in place, the previous one fades away where it was
+        void Jump(const RECT& r, float& alpha)
+        {
+            const std::array<float, 4> n{ static_cast<float>(r.left), static_cast<float>(r.top), static_cast<float>(r.right), static_cast<float>(r.bottom) };
+            if (!init) { Snap(r); return; }
+            if (n == t) return;
+            if (alpha > 0.03f) { p = x; prevAlpha = alpha; }
+            Snap(r);
+            alpha = 0.0f;
+        }
+        void StepPrev() { prevAlpha *= 0.68f; if (prevAlpha < 0.02f) prevAlpha = 0.0f; }
+        D2D1_RECT_F PrevRect() const { return D2D1::RectF(p[0], p[1], p[2], p[3]); }
         void Snap(const RECT& r) { x = t = { static_cast<float>(r.left), static_cast<float>(r.top), static_cast<float>(r.right), static_cast<float>(r.bottom) }; v = {}; init = true; }
         void Target(const RECT& r) { t = { static_cast<float>(r.left), static_cast<float>(r.top), static_cast<float>(r.right), static_cast<float>(r.bottom) }; if (!init) Snap(r); }
         void Step()
@@ -136,7 +150,7 @@ namespace
         void DrawSplitter(const GlassSplitter& bar);
         void DrawMenuBar(const GlassMenuBar& bar);
         void DrawGroups(const std::vector<RECT>& groups);
-        void DrawToolbarLens();
+        void DrawToolbarLens(const D2D1_RECT_F& r, float a);
         bool StepToolbar(const GlassLayer& layer);
         IDWriteTextFormat* GetGlyphFormat(int px);
         float TextWidth(const std::wstring& text, int px);
@@ -1048,12 +1062,13 @@ namespace
 
         if (m.hasHover)
         {
-            if (hoverAlpha < 0.05f) hoverSpring.Snap(m.hover);
-            hoverSpring.Target(m.hover);
+            hoverSpring.Jump(m.hover, hoverAlpha);
         }
         hoverAlpha += ((m.hasHover ? 1.0f : 0.0f) - hoverAlpha) * 0.22f;
         if (std::fabs((m.hasHover ? 1.0f : 0.0f) - hoverAlpha) < 0.01f) hoverAlpha = m.hasHover ? 1.0f : 0.0f;
         if (hoverSpring.init && hoverAlpha > 0.0f) { hoverSpring.Step(); moving |= hoverSpring.Moving(); }
+        hoverSpring.StepPrev();
+        moving |= hoverSpring.prevAlpha > 0.0f;
         moving |= hoverAlpha != (m.hasHover ? 1.0f : 0.0f);
         return moving;
     }
@@ -1094,10 +1109,9 @@ namespace
         };
 
         // Hover lens (under the selection outline)
-        if (hoverSpring.init && hoverAlpha > 0.01f)
+        const auto drawHover = [&](const D2D1_RECT_F& r, const float a)
         {
-            const D2D1_RECT_F r = hoverSpring.Rect();
-            const float radius = std::clamp(std::min(r.right - r.left, r.bottom - r.top) * 0.18f, 2.0f, 12.0f), a = hoverAlpha;
+            const float radius = std::clamp(std::min(r.right - r.left, r.bottom - r.top) * 0.18f, 2.0f, 12.0f);
             if (r.right - r.left > 4 && r.bottom - r.top > 4)
             {
                 ComPtr<ID2D1RoundedRectangleGeometry> shape;
@@ -1121,6 +1135,11 @@ namespace
                     dc->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(r.left + 0.8f, r.top + 0.8f, r.right - 0.8f, r.bottom - 0.8f), radius, radius), rimLight.Get(), 1.8f);
                 }
             }
+        };
+        if (hoverSpring.init)
+        {
+            if (hoverSpring.prevAlpha > 0.02f) drawHover(hoverSpring.PrevRect(), hoverSpring.prevAlpha);
+            if (hoverAlpha > 0.01f) drawHover(hoverSpring.Rect(), hoverAlpha);
         }
 
         if (m.single && selectSpring.init && selectAlpha > 0.01f) outline(selectSpring.Rect(), selectAlpha);
@@ -1182,8 +1201,7 @@ namespace
         if (has)
         {
             RECT r = bar.items[static_cast<size_t>(target)].rect;
-            if (menuAlpha < 0.05f) menuLens.Snap(r);
-            menuLens.Target(r);
+            menuLens.Jump(r, menuAlpha);
         }
         const float strengthTarget = open ? 1.0f : 0.0f;
         menuStrength += (strengthTarget - menuStrength) * 0.25f;
@@ -1193,6 +1211,8 @@ namespace
         if (std::fabs(strengthTarget - menuStrength) < 0.01f) menuStrength = strengthTarget;
         bool moving = menuAlpha != alphaTarget || menuStrength != strengthTarget;
         if (menuLens.init && menuAlpha > 0.0f) { menuLens.Step(); moving |= menuLens.Moving(); }
+        menuLens.StepPrev();
+        moving |= menuLens.prevAlpha > 0.0f;
         return moving;
     }
 
@@ -1201,10 +1221,9 @@ namespace
     {
         ComPtr<ID2D1SolidColorBrush> brush;
         if (FAILED(dc->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 1), &brush))) return;
-        if (menuLens.init && menuAlpha > 0.01f)
+        const auto drawLens = [&](const D2D1_RECT_F& r, const float a)
         {
-            const D2D1_RECT_F r = menuLens.Rect();
-            const float radius = (r.bottom - r.top) / 2, a = menuAlpha, s = menuStrength;
+            const float radius = (r.bottom - r.top) / 2, s = menuStrength;
             brush->SetColor(D2D1::ColorF(1, 1, 1, (dark ? 0.10f + 0.10f * s : 0.30f + 0.28f * s) * a));
             dc->FillRoundedRectangle(D2D1::RoundedRect(r, radius, radius), brush.Get());
             ComPtr<ID2D1RoundedRectangleGeometry> shape;
@@ -1227,6 +1246,11 @@ namespace
             }
             brush->SetColor(D2D1::ColorF(0.2f, 0.22f, 0.35f, 0.10f * a));
             dc->DrawRoundedRectangle(D2D1::RoundedRect(r, radius, radius), brush.Get(), 1.0f);
+        };
+        if (menuLens.init)
+        {
+            if (menuLens.prevAlpha > 0.02f) drawLens(menuLens.PrevRect(), menuLens.prevAlpha);
+            if (menuAlpha > 0.01f) drawLens(menuLens.Rect(), menuAlpha);
         }
         if (IDWriteTextFormat* format = GetFormat(bar.fontPx, DWRITE_TEXT_ALIGNMENT_CENTER))
         {
@@ -1317,24 +1341,23 @@ namespace
             const int side = std::min(r.right - r.left, r.bottom - r.top) - 2;
             const int cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
             const RECT lens{ cx - side / 2, cy - side / 2, cx + side / 2, cy + side / 2 };
-            if (toolAlpha < 0.05f) toolLens.Snap(lens);
-            toolLens.Target(lens);
+            toolLens.Jump(lens, toolAlpha);
         }
         const float target = hot != nullptr ? 1.0f : 0.0f;
         toolAlpha += (target - toolAlpha) * 0.25f;
         if (std::fabs(target - toolAlpha) < 0.01f) toolAlpha = target;
         bool moving = toolAlpha != target;
         if (toolLens.init && toolAlpha > 0.0f) { toolLens.Step(); moving |= toolLens.Moving(); }
+        toolLens.StepPrev();
+        moving |= toolLens.prevAlpha > 0.0f;
         return moving;
     }
 
-    void Overlay::DrawToolbarLens()
+    void Overlay::DrawToolbarLens(const D2D1_RECT_F& r, const float a)
     {
-        if (!toolLens.init || toolAlpha <= 0.01f) return;
         ComPtr<ID2D1SolidColorBrush> brush;
         if (FAILED(dc->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 1), &brush))) return;
-        const D2D1_RECT_F r = toolLens.Rect();
-        const float radius = std::min((r.bottom - r.top) / 2, 12.0f), a = toolAlpha;
+        const float radius = std::min((r.bottom - r.top) / 2, 12.0f);
         brush->SetColor(dark ? D2D1::ColorF(1, 1, 1, 0.07f * a) : D2D1::ColorF(0.24f, 0.30f, 0.52f, 0.10f * a));
         dc->FillRoundedRectangle(D2D1::RoundedRect(r, radius, radius), brush.Get());
         ComPtr<ID2D1RoundedRectangleGeometry> shape;
@@ -1420,7 +1443,11 @@ namespace
             if (source != nullptr && row.selected) DrawRegion({ row.rect, row.radius }, source, curX, curY);
             dc->PopAxisAlignedClip();
         }
-        DrawToolbarLens();
+        if (toolLens.init)
+        {
+            if (toolLens.prevAlpha > 0.02f) DrawToolbarLens(toolLens.PrevRect(), toolLens.prevAlpha);
+            if (toolAlpha > 0.01f) DrawToolbarLens(toolLens.Rect(), toolAlpha);
+        }
         for (const auto& icon : layer.icons) DrawIcon(icon);
         for (const auto& text : layer.texts) DrawLabel(text);
         const HRESULT hr = dc->EndDraw();
