@@ -55,6 +55,7 @@ struct GlassRow
 
 struct GlassLayer
 {
+    bool dark = false;                 // dark appearance: pills, glyphs and lenses use the dark palette
     std::vector<RECT> groups;          // rounded pills behind each toolbar button group
     std::vector<GlassMenuBar> menuBars;
     std::vector<GlassTabStrip> tabStrips;

@@ -93,6 +93,7 @@ namespace
             return stroke_.Get();
         }
         size_t lastSignature = 0;
+        bool dark = false;
         ComPtr<ID3D11Device> d3d;
         ComPtr<IDXGIDevice> dxgi;
         ComPtr<IDXGISwapChain1> swap;
@@ -576,8 +577,9 @@ namespace
                 const float scale = 1.0f + 0.12f * hover - 0.10f * press;
                 ComPtr<ID2D1SolidColorBrush> brush;
                 // Ink for available commands, a faint ink when unavailable, accent for the primary / active ones
-                const D2D1_COLOR_F ink = !icon.enabled ? D2D1::ColorF(0.13f, 0.14f, 0.19f, 0.30f)
-                    : (icon.accent || icon.checked) ? D2D1::ColorF(0.04f, 0.46f, 0.98f) : D2D1::ColorF(0.13f, 0.14f, 0.19f);
+                const D2D1_COLOR_F inkBase = dark ? D2D1::ColorF(0.91f, 0.93f, 0.97f) : D2D1::ColorF(0.13f, 0.14f, 0.19f);
+                const D2D1_COLOR_F ink = !icon.enabled ? D2D1::ColorF(inkBase.r, inkBase.g, inkBase.b, 0.32f)
+                    : (icon.accent || icon.checked) ? (dark ? D2D1::ColorF(0.42f, 0.68f, 1.0f) : D2D1::ColorF(0.04f, 0.46f, 0.98f)) : inkBase;
                 if (SUCCEEDED(dc->CreateSolidColorBrush(ink, &brush)))
                 {
                     dc->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale, D2D1::Point2F(cx, cy)));
@@ -687,6 +689,7 @@ namespace
         for (const auto& b : layer.menuBars) mix(b.hash);
         for (const auto& g : layer.groups) mixRect(g);
         for (const auto& i : layer.icons) mix(static_cast<size_t>(i.enabled) | static_cast<size_t>(i.accent) << 1);
+        mix(static_cast<size_t>(layer.dark));
         return h;
     }
 
@@ -1162,7 +1165,8 @@ namespace
         }
         const float a = 0.22f + 0.28f * swell;
         const float rr = 0.24f + (0.04f - 0.24f) * glow, gg = 0.28f + (0.52f - 0.28f) * glow, bb = 0.42f + (1.0f - 0.42f) * glow;
-        brush->SetColor(D2D1::ColorF(rr, gg, bb, a + (0.9f - a) * glow));
+        if (dark) brush->SetColor(D2D1::ColorF(0.72f + (0.04f - 0.72f) * glow, 0.76f + (0.52f - 0.76f) * glow, 0.88f + (1.0f - 0.88f) * glow, (0.20f + 0.30f * swell) + (0.9f - (0.20f + 0.30f * swell)) * glow));
+        else brush->SetColor(D2D1::ColorF(rr, gg, bb, a + (0.9f - a) * glow));
         dc->FillRoundedRectangle(D2D1::RoundedRect(pill, r, r), brush.Get());
     }
 
@@ -1201,7 +1205,7 @@ namespace
         {
             const D2D1_RECT_F r = menuLens.Rect();
             const float radius = (r.bottom - r.top) / 2, a = menuAlpha, s = menuStrength;
-            brush->SetColor(D2D1::ColorF(1, 1, 1, (0.30f + 0.28f * s) * a));
+            brush->SetColor(D2D1::ColorF(1, 1, 1, (dark ? 0.10f + 0.10f * s : 0.30f + 0.28f * s) * a));
             dc->FillRoundedRectangle(D2D1::RoundedRect(r, radius, radius), brush.Get());
             ComPtr<ID2D1RoundedRectangleGeometry> shape;
             ComPtr<ID2D1GradientStopCollection> glowStops, rimStops;
@@ -1284,18 +1288,20 @@ namespace
             const float radius = (r.bottom - r.top) / 2;
             for (int i = 6; i >= 1; --i) // soft shadow
             {
-                brush->SetColor(D2D1::ColorF(0.1f, 0.12f, 0.22f, 0.012f * static_cast<float>(7 - i)));
+                brush->SetColor(dark ? D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.045f * static_cast<float>(7 - i)) : D2D1::ColorF(0.1f, 0.12f, 0.22f, 0.012f * static_cast<float>(7 - i)));
                 dc->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(r.left - i, r.top - i + 2, r.right + i, r.bottom + i + 2), radius + i, radius + i), brush.Get(), 1.0f);
             }
             ComPtr<ID2D1GradientStopCollection> stops;
             ComPtr<ID2D1LinearGradientBrush> fill;
-            const D2D1_GRADIENT_STOP gs[] = { { 0.0f, D2D1::ColorF(1, 1, 1, 0.90f) }, { 1.0f, D2D1::ColorF(0.95f, 0.96f, 0.99f, 0.78f) } };
+            const D2D1_GRADIENT_STOP gs[] = {
+                { 0.0f, dark ? D2D1::ColorF(0.23f, 0.24f, 0.30f, 0.94f) : D2D1::ColorF(1, 1, 1, 0.90f) },
+                { 1.0f, dark ? D2D1::ColorF(0.17f, 0.18f, 0.23f, 0.92f) : D2D1::ColorF(0.95f, 0.96f, 0.99f, 0.78f) } };
             if (SUCCEEDED(dc->CreateGradientStopCollection(gs, 2, &stops)) &&
                 SUCCEEDED(dc->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties(D2D1::Point2F(0, r.top), D2D1::Point2F(0, r.bottom)), stops.Get(), &fill)))
                 dc->FillRoundedRectangle(D2D1::RoundedRect(r, radius, radius), fill.Get());
-            brush->SetColor(D2D1::ColorF(0.24f, 0.28f, 0.42f, 0.10f));
+            brush->SetColor(dark ? D2D1::ColorF(1, 1, 1, 0.10f) : D2D1::ColorF(0.24f, 0.28f, 0.42f, 0.10f));
             dc->DrawRoundedRectangle(D2D1::RoundedRect(r, radius, radius), brush.Get(), 1.0f);
-            brush->SetColor(D2D1::ColorF(1, 1, 1, 0.9f));
+            brush->SetColor(dark ? D2D1::ColorF(1, 1, 1, 0.07f) : D2D1::ColorF(1, 1, 1, 0.9f));
             dc->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(r.left + 1, r.top + 1, r.right - 1, r.bottom - 1), radius - 1, radius - 1), brush.Get(), 1.0f);
         }
     }
@@ -1329,15 +1335,16 @@ namespace
         if (FAILED(dc->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 1), &brush))) return;
         const D2D1_RECT_F r = toolLens.Rect();
         const float radius = std::min((r.bottom - r.top) / 2, 12.0f), a = toolAlpha;
-        brush->SetColor(D2D1::ColorF(0.24f, 0.30f, 0.52f, 0.10f * a));
+        brush->SetColor(dark ? D2D1::ColorF(1, 1, 1, 0.07f * a) : D2D1::ColorF(0.24f, 0.30f, 0.52f, 0.10f * a));
         dc->FillRoundedRectangle(D2D1::RoundedRect(r, radius, radius), brush.Get());
         ComPtr<ID2D1RoundedRectangleGeometry> shape;
         ComPtr<ID2D1GradientStopCollection> glowStops, rimStops;
         ComPtr<ID2D1RadialGradientBrush> glow, rimLight;
         const D2D1_POINT_2F light = D2D1::Point2F(std::clamp(curX, r.left, r.right), std::clamp(curY, r.top, r.bottom));
         const float reach = std::max(r.right - r.left, 70.0f) * 0.8f;
-        const D2D1_GRADIENT_STOP glowGradient[] = { { 0.0f, D2D1::ColorF(1, 1, 1, 0.85f * a) }, { 0.5f, D2D1::ColorF(1, 1, 1, 0.25f * a) }, { 1.0f, D2D1::ColorF(1, 1, 1, 0.0f) } };
-        const D2D1_GRADIENT_STOP rimGradient[] = { { 0.0f, D2D1::ColorF(1, 1, 1, 1.0f * a) }, { 1.0f, D2D1::ColorF(1, 1, 1, 0.1f * a) } };
+        const float lift = dark ? 0.45f : 1.0f; // white highlights are toned down on dark surfaces
+        const D2D1_GRADIENT_STOP glowGradient[] = { { 0.0f, D2D1::ColorF(1, 1, 1, 0.85f * a * lift) }, { 0.5f, D2D1::ColorF(1, 1, 1, 0.25f * a * lift) }, { 1.0f, D2D1::ColorF(1, 1, 1, 0.0f) } };
+        const D2D1_GRADIENT_STOP rimGradient[] = { { 0.0f, D2D1::ColorF(1, 1, 1, 1.0f * a * lift) }, { 1.0f, D2D1::ColorF(1, 1, 1, 0.1f * a * lift) } };
         if (SUCCEEDED(factory->CreateRoundedRectangleGeometry(D2D1::RoundedRect(r, radius, radius), &shape)) &&
             SUCCEEDED(dc->CreateGradientStopCollection(glowGradient, 3, &glowStops)) &&
             SUCCEEDED(dc->CreateGradientStopCollection(rimGradient, 2, &rimStops)) &&
@@ -1363,6 +1370,7 @@ namespace
         if (failed) return;
 
         const GlassLayer layer = provider ? provider() : GlassLayer{};
+        dark = layer.dark;
         const std::vector<GlassRegion>& regions = layer.regions;
         animating = StepAnimation(layer.icons);
         animating |= StepRows(layer.rows);

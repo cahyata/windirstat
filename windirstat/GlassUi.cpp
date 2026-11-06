@@ -46,6 +46,7 @@ namespace
         ComPtr<ID2D1Factory1> factory;
         ComPtr<ID2D1DeviceContext> dc;
         ComPtr<IDWriteFactory> dwrite;
+        float surfaceBoost = 1.0f;   // dark mode: frosted surfaces are made denser
         ComPtr<ID2D1SolidColorBrush> brush;
         ComPtr<ID2D1StrokeStyle> roundStroke;
         std::map<std::tuple<int, int, int>, ComPtr<IDWriteTextFormat>> formats;
@@ -178,7 +179,7 @@ namespace
         void Glass(const D2D1_RECT_F& r, const float radius)
         {
             Shadow(r, radius);
-            Gradient(r, radius, ColorF(1, 1, 1, 0.62f), ColorF(0.96f, 0.97f, 1.0f, 0.38f));
+            Gradient(r, radius, ColorF(1, 1, 1, std::min(1.0f, 0.62f * surfaceBoost)), ColorF(0.96f, 0.97f, 1.0f, std::min(1.0f, 0.38f * surfaceBoost)));
             Stroke(D2D1::RectF(r.left - 0.5f, r.top - 0.5f, r.right + 0.5f, r.bottom + 0.5f), radius + 0.5f,
                 ColorF(0.2f, 0.22f, 0.35f, 0.10f), 1.4f);
             Rim(r, radius);
@@ -1215,7 +1216,61 @@ namespace
         ComPtr<IDCompositionTarget> target;
         ComPtr<IDCompositionVisual> visual;
         ComPtr<ID2D1Bitmap1> targetBitmap;
+        ComPtr<ID2D1Bitmap1> scene;           // light rendering, only used in dark mode
+        ComPtr<ID2D1Effect> darken;           // lightness inversion that keeps hues
+        bool dark = false;
         Gfx gfx;
+
+        // Dark mode: the whole light design is drawn offscreen and then run through "invert + hue rotate 180", which
+        // flips lightness (white glass -> dark glass, dark ink -> light ink) while accent colours stay recognisable.
+        void BeginScene()
+        {
+            if (dark)
+            {
+                D2D1_SIZE_U size{ static_cast<UINT32>(std::max(1, pxWidth)), static_cast<UINT32>(std::max(1, pxHeight)) };
+                if (!scene || scene->GetPixelSize().width != size.width || scene->GetPixelSize().height != size.height)
+                {
+                    scene.Reset();
+                    const D2D1_BITMAP_PROPERTIES1 props = D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_TARGET,
+                        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), dpi, dpi);
+                    gfx.dc->CreateBitmap(size, nullptr, 0, &props, &scene);
+                }
+                if (!darken)
+                {
+                    constexpr GUID colorMatrix = { 0x921f03d6, 0x641c, 0x47df, { 0x85, 0x2d, 0xb4, 0xbb, 0x61, 0x53, 0xae, 0x11 } };
+                    if (SUCCEEDED(gfx.dc->CreateEffect(colorMatrix, &darken)))
+                    {
+                        constexpr float h[3][3] = { { -0.574f, 1.430f, 0.144f }, { 0.426f, 0.430f, 0.144f }, { 0.426f, 1.430f, -0.856f } };
+                        D2D1_MATRIX_5X4_F m{};
+                        for (int in = 0; in < 3; ++in)
+                            for (int out = 0; out < 3; ++out) m.m[in][out] = -h[out][in];
+                        m.m[3][3] = 1.0f;
+                        m.m[4][0] = m.m[4][1] = m.m[4][2] = 1.0f;
+                        darken->SetValue(0 /* COLOR_MATRIX */, m);
+                        darken->SetValue(1 /* ALPHA_MODE */, 2 /* STRAIGHT */);
+                    }
+                }
+                if (scene) gfx.dc->SetTarget(scene.Get());
+            }
+            gfx.dc->BeginDraw();
+            gfx.dc->Clear(D2D1::ColorF(0, 0, 0, 0));
+        }
+
+        bool EndScene()
+        {
+            if (FAILED(gfx.dc->EndDraw())) { if (dark) gfx.dc->SetTarget(targetBitmap.Get()); return false; }
+            if (dark && scene && darken)
+            {
+                gfx.dc->SetTarget(targetBitmap.Get());
+                darken->SetInput(0, scene.Get());
+                gfx.dc->BeginDraw();
+                gfx.dc->Clear(D2D1::ColorF(0, 0, 0, 0));
+                gfx.dc->DrawImage(darken.Get());
+                if (FAILED(gfx.dc->EndDraw())) return false;
+            }
+            else if (dark) gfx.dc->SetTarget(targetBitmap.Get());
+            return true;
+        }
 
         template <class T> T* Add(const float x, const float y, const float w, const float h)
         {
@@ -1245,6 +1300,13 @@ namespace
 
     bool GlassWindow::Init()
     {
+        dark = DarkMode::IsDarkModeActive();
+        gfx.surfaceBoost = dark ? 1.55f : 1.0f;
+        if (dark)
+        {
+            const BOOL immersive = TRUE; // DWMWA_USE_IMMERSIVE_DARK_MODE: dark caption and dark acrylic
+            DwmSetWindowAttribute(hwnd, 20, &immersive, sizeof(immersive));
+        }
         const HMODULE d3dModule = LoadLibraryW(L"d3d11.dll"), d2dModule = LoadLibraryW(L"d2d1.dll");
         const HMODULE dcompModule = LoadLibraryW(L"dcomp.dll"), dwriteModule = LoadLibraryW(L"dwrite.dll");
         if (!d3dModule || !d2dModule || !dcompModule || !dwriteModule) return false;
@@ -1405,8 +1467,7 @@ namespace
         }
         if (!dirty && !animating) return;
         dirty = animating;
-        gfx.dc->BeginDraw();
-        gfx.dc->Clear(ColorF(0, 0, 0, 0));
+        BeginScene();
         for (auto& widget : widgets) if (widget->visible) widget->Draw(gfx);
         if (lens.init && lensAlpha > 0.01f)
         {
@@ -1415,7 +1476,7 @@ namespace
             g_lensDraw(gfx, l, radius, a, D2D1::Point2F(std::clamp(lightX, l.left, l.right), std::clamp(lightY, l.top, l.bottom)));
         }
         if (popup) popup->Draw(gfx);
-        if (FAILED(gfx.dc->EndDraw())) return;
+        if (!EndScene()) return;
         swap->Present(0, 0);
     }
 
@@ -3155,13 +3216,12 @@ namespace
         if (lens.init && lensAlpha > 0) lens.Step();
         const float appear = std::clamp(static_cast<float>(GetTickCount64() - born) / 110.0f, 0.0f, 1.0f);
 
-        g.dc->BeginDraw();
-        g.dc->Clear(ColorF(0, 0, 0, 0));
+        gw.BeginScene();
         g.dc->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(), nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
             D2D1::IdentityMatrix(), appear), nullptr);
 
         const D2D1_RECT_F body = D2D1::RectF(0, 0, width, height);
-        g.Gradient(body, 12, ColorF(1, 1, 1, 0.66f), ColorF(0.96f, 0.97f, 1.0f, 0.50f));
+        g.Gradient(body, 12, ColorF(1, 1, 1, std::min(1.0f, 0.66f * g.surfaceBoost)), ColorF(0.96f, 0.97f, 1.0f, std::min(1.0f, 0.50f * g.surfaceBoost)));
         g.Rim(body, 12, 0.7f);
 
         if (lens.init && lensAlpha > 0.01f)
@@ -3208,7 +3268,7 @@ namespace
             }
         }
         g.dc->PopLayer();
-        if (FAILED(g.dc->EndDraw())) return;
+        if (!gw.EndScene()) return;
         gw.swap->Present(0, 0);
     }
 }

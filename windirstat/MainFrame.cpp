@@ -565,6 +565,7 @@ int CMainFrame::OnCreate(const LPCREATESTRUCT lpCreateStruct)
     GlassOverlay::Attach(Handle(), [this]
     {
         GlassLayer layer;
+        layer.dark = DarkMode::IsDarkModeActive();
         auto& regions = layer.regions;
         const auto add = [&](const HWND child, RECT rc, const int dx, const int dy, const float radius)
         {
