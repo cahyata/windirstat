@@ -17,7 +17,7 @@ const std::array<CLayoutPopup::LayoutDef, LayoutCount> CLayoutPopup::LAYOUTS = [
     using enum CSplitterWnd::Orientation;
     return std::to_array<LayoutDef>({
         // [AF|FT] above visualization
-        { Horizontal, Vertical, 0, { VT_VISUALIZATION, VT_ALLFILES, VT_FILETYPES }, 0.5, 0.75, 0.5f, 0.58f },
+        { Horizontal, Vertical, 0, { VT_VISUALIZATION, VT_ALLFILES, VT_FILETYPES }, 0.5, 0.66, 0.5f, 0.56f },
         // AF | [FT|visualization]
         { Vertical, Vertical, 1, { VT_ALLFILES, VT_FILETYPES, VT_VISUALIZATION }, 0.4, 1.0 / 3.0, 0.4f, 1.0f / 3.0f },
         // [visualization|AF] | FT

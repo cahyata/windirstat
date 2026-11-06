@@ -16,6 +16,7 @@ public:
     bool CreateExtended(DWORD dwExStyle, DWORD dwStyle, const RECT& rect, CWnd* pParentWnd, UINT nID) override;
     bool GetAscendingDefault(int column) override;
     bool GlassRenderable() const override { return true; }
+    int GlassColumnWeight(int subitem) const override;
     static CFileTreeControl* Get() { return m_singleton; }
 
 protected:

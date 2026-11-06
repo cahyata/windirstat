@@ -621,7 +621,7 @@ private:
     CRect TabStripRect() const;
     void UpdatePaintedTabRects(const CRect& rcStrip, bool bottomTabs, bool labelOnlyTabs);
     bool UsesLabelOnlyTabs() const;
-    int TabStripHeight() const { return ::ScaleForDpi(22, m_hWnd); }
+    int TabStripHeight() const { return ::ScaleForDpi(28, m_hWnd); }
     void LayoutPanes();
 
     std::vector<TabInfo> m_tabs;

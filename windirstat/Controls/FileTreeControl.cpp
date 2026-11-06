@@ -25,6 +25,24 @@ bool CFileTreeControl::CreateExtended(const DWORD dwExStyle, const DWORD dwStyle
     return created;
 }
 
+// The share and physical size lead; logical size, counts and dates step back
+int CFileTreeControl::GlassColumnWeight(const int subitem) const
+{
+    switch (subitem)
+    {
+    case COL_PERCENTAGE:
+    case COL_SIZE_PHYSICAL: return 1;
+    case COL_SIZE_LOGICAL:
+    case COL_ITEMS:
+    case COL_FILES:
+    case COL_FOLDERS:
+    case COL_LAST_CHANGE:
+    case COL_ATTRIBUTES:
+    case COL_OWNER: return -1;
+    default: return 0;
+    }
+}
+
 bool CFileTreeControl::GetAscendingDefault(const int column)
 {
     return column == COL_NAME || column == COL_LAST_CHANGE;

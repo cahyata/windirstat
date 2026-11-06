@@ -25,6 +25,7 @@ struct GlassCell
 
     // Label
     HICON icon = nullptr;
+    wchar_t glyph = 0;               // Segoe Fluent glyph drawn instead of the icon (e.g. scan warning)
     bool tree = false;               // draw the tree indentation and expander
     bool hasChildren = false;
     bool expanded = false;
@@ -46,6 +47,7 @@ struct GlassListColumn
     bool rightAligned = false;
     std::wstring title;
     int sort = 0;                    // 0 none, 1 ascending, 2 descending
+    int weight = 0;                  // 1 leading figures, 0 normal, -1 recede
 };
 
 struct GlassListRow

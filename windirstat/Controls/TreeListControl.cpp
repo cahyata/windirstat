@@ -20,6 +20,12 @@ void CTreeListItem::GetGlassCell(const int subitem, GlassCell& cell)
     cell.kind = GlassCell::Kind::Label;
     cell.tree = true;
     cell.icon = GetIcon();
+    // The classic warning triangle is replaced by a Fluent glyph so every row shares one icon style
+    if (cell.icon != nullptr && GetIconHandler() != nullptr && cell.icon == GetIconHandler()->GetScanErrorImage())
+    {
+        cell.glyph = 0xE7BA;
+        cell.icon = nullptr;
+    }
     cell.indent = GetIndent();
     cell.hasChildren = HasChildren();
     cell.expanded = IsExpanded();
@@ -614,7 +620,8 @@ void CTreeListControl::ExpandItem(const int i, const bool scroll)
     if (COptions::AutomaticallyResizeColumns && scroll && GetColumnWidth(0) < maxwidth)
     {
         constexpr int padding = 3;
-        SetColumnWidth(0, maxwidth + padding);
+        const int cap = std::max(GetColumnWidth(0), GetClientRect().Width() * 45 / 100);
+        SetColumnWidth(0, std::min(maxwidth + padding, cap));
     }
 
     const bool sortChildrenOnly = m_logicalFocus == LF_FILETREE && CWinDirStatModel::Get()->IsScanSettled();

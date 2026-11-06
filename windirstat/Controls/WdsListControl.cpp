@@ -731,6 +731,7 @@ bool CWdsListControl::BuildGlassView(const HWND frame, std::shared_ptr<const Gla
         out_col.right = headerLeft + hr.right;
         out_col.rightAligned = (column.fmt & LVCFMT_RIGHT) != 0;
         out_col.title = title.data();
+        out_col.weight = GlassColumnWeight(column.iSubItem);
         out_col.sort = (hd.fmt & HDF_SORTUP) ? 1 : (hd.fmt & HDF_SORTDOWN) ? 2 : 0;
         view->columns.push_back(std::move(out_col));
         subitems.push_back(column.iSubItem);

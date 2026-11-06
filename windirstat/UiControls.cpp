@@ -1678,7 +1678,7 @@ bool CTabControl::BuildGlassStrip(const HWND frame, GlassTabStrip& out)
     out.dark = DarkMode::IsDarkModeActive();
     LOGFONT font{};
     ::GetObjectW(GetFont() != nullptr ? GetFont() : GetAppFont(m_hWnd), sizeof(font), &font);
-    out.fontPx = std::max(8, std::abs(static_cast<int>(font.lfHeight)));
+    out.fontPx = std::max(8, std::abs(static_cast<int>(font.lfHeight))) * 11 / 10; // tab labels read a little larger
     size_t hash = 1469598103934665603ull;
     const auto mix = [&hash](const size_t v) { hash = (hash ^ v) * 1099511628211ull; };
     for (const int logical : m_visibleToLogical)

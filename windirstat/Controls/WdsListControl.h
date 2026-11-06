@@ -137,6 +137,8 @@ public:
 
     // Lists the GPU compositor may paint completely (all of their cells are describable through GetGlassCell)
     virtual bool GlassRenderable() const { return false; }
+    // Visual weight of a column in the compositor: 1 emphasised, 0 normal, -1 receding
+    virtual int GlassColumnWeight(int /*subitem*/) const { return 0; }
     // Snapshots the visible part of this list for the compositor. Coordinates are relative to `frame`.
     bool BuildGlassView(HWND frame, std::shared_ptr<const GlassListView>& out);
 

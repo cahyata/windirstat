@@ -138,6 +138,7 @@ namespace
         void DrawToolbarLens();
         bool StepToolbar(const GlassLayer& layer);
         IDWriteTextFormat* GetGlyphFormat(int px);
+        float TextWidth(const std::wstring& text, int px);
         std::vector<std::pair<int, ComPtr<IDWriteTextFormat>>> glyphFormats;
         std::wstring glyphFamily;
         bool glyphChecked = false;
@@ -783,20 +784,25 @@ namespace
         }
         const COLORREF softText = v.dark ? RGB(176, 182, 196) : RGB(98, 104, 118);
         dc->PushAxisAlignedClip(D2D1::RectF(static_cast<float>(v.client.left), headerF.top, static_cast<float>(v.client.right), headerF.bottom), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-        for (const auto& col : v.columns)
+        for (size_t ci = 0; ci < v.columns.size(); ++ci)
         {
-            const float slot = col.sort != 0 ? 18.0f : 0.0f;
-            D2D1_RECT_F tr = D2D1::RectF(static_cast<float>(col.left) + 8, headerF.top, static_cast<float>(col.right) - 8, headerF.bottom);
-            if (col.sort != 0) { if (col.rightAligned) tr.left += slot; else tr.right -= slot; }
+            GlassListColumn col = v.columns[ci];
+            if (!v.rows.empty() && ci < v.rows.front().cells.size() && v.rows.front().cells[ci].kind == GlassCell::Kind::Bar) col.rightAligned = false;
+            const D2D1_RECT_F tr = D2D1::RectF(static_cast<float>(col.left) + (col.rightAligned ? 6.0f : 8.0f), headerF.top, static_cast<float>(col.right) - 6, headerF.bottom);
+            const float labelWidth = std::min(TextWidth(col.title, v.fontPx), tr.right - tr.left);
+            // A sorted column keeps room for the chevron beside its label
+            D2D1_RECT_F textRect = tr;
+            if (col.sort != 0 && col.rightAligned) textRect.right -= 0;
             if (IDWriteTextFormat* format = GetFormat(v.fontPx, col.rightAligned ? DWRITE_TEXT_ALIGNMENT_TRAILING : DWRITE_TEXT_ALIGNMENT_LEADING))
             {
                 brush->SetColor(color(softText));
-                dc->DrawText(col.title.c_str(), static_cast<UINT32>(col.title.size()), format, tr, brush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                dc->DrawText(col.title.c_str(), static_cast<UINT32>(col.title.size()), format, textRect, brush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
             }
             if (col.sort != 0)
             {
                 const float cy = (headerF.top + headerF.bottom) * 0.5f;
-                const float cx = col.rightAligned ? static_cast<float>(col.left) + 13.0f : static_cast<float>(col.right) - 13.0f;
+                const float cx = col.rightAligned ? std::max(static_cast<float>(col.left) + 8.0f, tr.right - labelWidth - 11.0f)
+                                                  : std::min(static_cast<float>(col.right) - 8.0f, tr.left + labelWidth + 11.0f);
                 const float tip = col.sort == 1 ? cy - 2.2f : cy + 2.2f, base = col.sort == 1 ? cy + 2.2f : cy - 2.2f;
                 brush->SetColor(color(softText));
                 dc->DrawLine(D2D1::Point2F(cx - 4, base), D2D1::Point2F(cx, tip), brush.Get(), 1.5f, roundStroke());
@@ -813,6 +819,9 @@ namespace
         {
             const float top = static_cast<float>(row.top), bottom = static_cast<float>(row.bottom);
             if (bottom <= bodyTop) continue;
+            if (!row.selected && !row.hot)
+                fill(D2D1::RectF(static_cast<float>(v.client.left) + 16, bottom - 0.5f, static_cast<float>(v.client.right) - 16, bottom + 0.5f), 0.5f,
+                    v.dark ? D2D1::ColorF(1, 1, 1, 0.05f) : D2D1::ColorF(0.24f, 0.28f, 0.42f, 0.06f));
             if (row.striped) fill(D2D1::RectF(static_cast<float>(v.client.left), top, static_cast<float>(v.client.right), bottom), 0, v.dark ? D2D1::ColorF(1, 1, 1, 0.025f) : D2D1::ColorF(0.24f, 0.28f, 0.42f, 0.03f));
             const D2D1_RECT_F capsule = D2D1::RectF(static_cast<float>(v.client.left) + 5, top + 2, static_cast<float>(v.client.right) - 5, bottom - 2);
             const float radius = (capsule.bottom - capsule.top) / 2 + 1;
@@ -842,7 +851,12 @@ namespace
                 const float x0 = static_cast<float>(col.left), x1 = static_cast<float>(col.right);
                 COLORREF cellColor = cell.textColor != CLR_NONE ? cell.textColor : v.text;
                 if (row.selected) cellColor = textColor;
-                else if (c > 0 && cell.kind == GlassCell::Kind::Text) cellColor = mixColor(cellColor, cardBack, 0.38f);
+                else if (c > 0 && cell.kind == GlassCell::Kind::Text)
+                {
+                    // Leading figures keep full ink; the rest recede, the least important the most
+                    const int weight = col.weight;
+                    if (weight < 1) cellColor = mixColor(cellColor, cardBack, weight < 0 ? 0.54f : 0.36f);
+                }
                 float textLeft = x0 + 6, textRight = x1 - 6;
 
                 switch (cell.kind)
@@ -864,10 +878,13 @@ namespace
                     const float w = bar.right - bar.left;
                     const float subtree = w * static_cast<float>(std::clamp(cell.fraction, 0.0, 1.0));
                     const float absolute = w * static_cast<float>(std::clamp(cell.absolute, 0.0, 1.0));
+                    (void)track;
+                    const D2D1_COLOR_F share = v.dark ? D2D1::ColorF(0.30f, 0.42f, 0.66f) : D2D1::ColorF(0.72f, 0.83f, 1.0f);
+                    const D2D1_COLOR_F whole = v.dark ? D2D1::ColorF(0.38f, 0.64f, 1.0f) : D2D1::ColorF(0.17f, 0.52f, 1.0f);
                     if (subtree >= 1.0f)
-                        fill(D2D1::RectF(bar.left, bar.top, bar.left + std::max(subtree, std::min(h, 6.0f)), bar.bottom), r, color(mixColor(track, cell.color, v.dark ? 0.68f : 0.48f)));
+                        fill(D2D1::RectF(bar.left, bar.top, bar.left + std::max(subtree, std::min(h, 6.0f)), bar.bottom), r, share);
                     if (absolute >= 1.0f)
-                        fill(D2D1::RectF(bar.left, bar.top, bar.left + std::max(absolute, std::min(h, 6.0f)), bar.bottom), r, color(cell.color));
+                        fill(D2D1::RectF(bar.left, bar.top, bar.left + std::max(absolute, std::min(h, 6.0f)), bar.bottom), r, whole);
                     break;
                 }
                 case GlassCell::Kind::Swatch:
@@ -913,7 +930,17 @@ namespace
                             x += rowH;
                         }
                     }
-                    if (ID2D1Bitmap1* iconBitmap = GetHIcon(cell.icon))
+                    if (cell.glyph != 0)
+                    {
+                        if (IDWriteTextFormat* gf = GetGlyphFormat(static_cast<int>(iconPx)))
+                        {
+                            const float cy = (top + bottom) / 2;
+                            const wchar_t text[2] = { cell.glyph, L'\0' };
+                            brush->SetColor(row.selected ? color(v.highlightText) : D2D1::ColorF(0.92f, 0.58f, 0.04f));
+                            dc->DrawText(text, 1, gf, D2D1::RectF(x, cy - iconPx, x + iconPx, cy + iconPx), brush.Get(), D2D1_DRAW_TEXT_OPTIONS_NONE);
+                        }
+                    }
+                    else if (ID2D1Bitmap1* iconBitmap = GetHIcon(cell.icon))
                     {
                         const float cy = (top + bottom) / 2;
                         dc->DrawBitmap(iconBitmap, D2D1::RectF(x, cy - iconPx / 2, x + iconPx, cy + iconPx / 2), 1.0f, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC);
@@ -1227,6 +1254,17 @@ namespace
         format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
         glyphFormats.emplace_back(px, format);
         return glyphFormats.back().second.Get();
+    }
+
+    float Overlay::TextWidth(const std::wstring& text, const int px)
+    {
+        IDWriteTextFormat* format = GetFormat(px);
+        if (format == nullptr || text.empty()) return 0.0f;
+        ComPtr<IDWriteTextLayout> layout;
+        if (FAILED(dwrite->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), format, 10000.0f, 100.0f, &layout))) return 0.0f;
+        DWRITE_TEXT_METRICS metrics{};
+        layout->GetMetrics(&metrics);
+        return metrics.width;
     }
 
     // One soft pill per button group
