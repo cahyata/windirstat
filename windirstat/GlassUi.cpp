@@ -304,7 +304,8 @@ namespace
         float size = 14;
         DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_NORMAL;
         bool soft = false;
-        void Draw(Gfx& g) override { g.Text(text, r, size, soft ? kInkSoft : kInk, weight); }
+        DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING;
+        void Draw(Gfx& g) override { g.Text(text, r, size, soft ? kInkSoft : kInk, weight, align); }
     };
 
     struct Button final : Widget
@@ -993,6 +994,161 @@ namespace
         }
     };
 
+    // Report-style list mirrored from a real list view (including owner-data lists): the glass widget keeps its own
+    // scroll position, reads the visible cells through the real control and selects rows by driving it.
+    struct ListMirror final : Widget
+    {
+        struct Col { std::wstring title; float left = 0, right = 0; bool rightAligned = false; };
+        std::vector<Col> cols;
+        std::vector<std::vector<std::wstring>> rows;   // visible rows
+        std::vector<bool> selected;
+        int top = 0, count = 0, hotRow = -1;
+        static constexpr float kRow = 30, kHeader = 34;
+        std::function<void(int)> chosen;
+        std::function<void(int)> activated;
+        ULONGLONG lastClick = 0;
+        int lastClickRow = -1;
+        ListMirror() { interactive = true; }
+        int Visible() const { return std::max(1, static_cast<int>((r.bottom - r.top - kHeader - 8) / kRow)); }
+        int RowAt(const float y) const
+        {
+            const int i = static_cast<int>(std::floor((y - r.top - kHeader - 4) / kRow));
+            return i >= 0 && i < Visible() && top + i < count ? top + i : -1;
+        }
+        void Wheel(const float delta) override { top = std::clamp(top - static_cast<int>(std::lround(delta / 30.0f)), 0, std::max(0, count - Visible())); }
+        void OnMove(const float, const float y) override { hotRow = RowAt(y); }
+        void OnClick(const float, const float y) override
+        {
+            const int row = RowAt(y);
+            if (row < 0) return;
+            if (chosen) chosen(row);
+            const ULONGLONG now = GetTickCount64();
+            if (row == lastClickRow && now - lastClick < 450 && activated) activated(row);
+            lastClick = now;
+            lastClickRow = row;
+        }
+        void Draw(Gfx& g) override
+        {
+            g.Gradient(r, 18, ColorF(1, 1, 1, 0.55f), ColorF(0.95f, 0.96f, 1.0f, 0.35f));
+            g.Stroke(r, 18, ColorF(0.2f, 0.22f, 0.35f, 0.12f), 1.4f);
+            g.Rim(r, 18, 0.7f);
+            g.dc->PushAxisAlignedClip(D2D1::RectF(r.left + 4, r.top + 4, r.right - 4, r.bottom - 4), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            const D2D1_RECT_F head = D2D1::RectF(r.left + 8, r.top + 6, r.right - 8, r.top + kHeader);
+            g.Fill(head, (head.bottom - head.top) / 2, ColorF(0.24f, 0.28f, 0.42f, 0.07f));
+            for (const auto& c : cols)
+                g.Text(c.title, D2D1::RectF(r.left + c.left + 8, head.top, r.left + c.right - 8, head.bottom), 13, kInkSoft,
+                    DWRITE_FONT_WEIGHT_MEDIUM, c.rightAligned ? DWRITE_TEXT_ALIGNMENT_TRAILING : DWRITE_TEXT_ALIGNMENT_LEADING);
+            for (size_t i = 0; i < rows.size(); ++i)
+            {
+                const float y = r.top + kHeader + 4 + static_cast<float>(i) * kRow;
+                const D2D1_RECT_F row = D2D1::RectF(r.left + 8, y + 1, r.right - 8, y + kRow - 1);
+                const bool sel = i < selected.size() && selected[i];
+                if (sel) g.Gradient(row, (row.bottom - row.top) / 2, ColorF(0.30f, 0.62f, 1.0f, 0.92f), ColorF(0.04f, 0.50f, 0.98f, 0.92f));
+                else if (static_cast<int>(i) + top == hotRow) g.Fill(row, (row.bottom - row.top) / 2, ColorF(0.24f, 0.32f, 0.6f, 0.08f));
+                for (size_t c = 0; c < cols.size() && c < rows[i].size(); ++c)
+                    g.Text(rows[i][c], D2D1::RectF(r.left + cols[c].left + 8, y, r.left + cols[c].right - 8, y + kRow), 13.5f,
+                        sel ? ColorF(1, 1, 1) : kInk, DWRITE_FONT_WEIGHT_NORMAL,
+                        cols[c].rightAligned ? DWRITE_TEXT_ALIGNMENT_TRAILING : DWRITE_TEXT_ALIGNMENT_LEADING);
+            }
+            g.dc->PopAxisAlignedClip();
+            if (count > Visible())
+            {
+                const float track = r.bottom - r.top - kHeader - 16, thumb = std::max(24.0f, track * static_cast<float>(Visible()) / static_cast<float>(count));
+                const float y = r.top + kHeader + 8 + (track - thumb) * static_cast<float>(top) / static_cast<float>(std::max(1, count - Visible()));
+                g.Fill(D2D1::RectF(r.right - 9, y, r.right - 5, y + thumb), 2, ColorF(0.24f, 0.28f, 0.42f, 0.35f));
+            }
+        }
+    };
+
+    // Read-only text mirrored from a rich edit: wrapped, scrollable, with clickable web addresses
+    struct TextView final : Widget
+    {
+        std::wstring text;
+        bool center = false;
+        float scroll = 0, contentH = 0, layoutW = 0;
+        size_t layoutHash = 0;
+        ComPtr<IDWriteTextLayout> layout;
+        ComPtr<ID2D1SolidColorBrush> linkBrush;
+        std::vector<std::pair<UINT32, UINT32>> links;
+        TextView() { interactive = true; }
+        float ViewH() const { return r.bottom - r.top - 24; }
+        void Wheel(const float delta) override { scroll = std::clamp(scroll - delta, 0.0f, std::max(0.0f, contentH - ViewH())); }
+        void Build(Gfx& g)
+        {
+            const float width = std::max(40.0f, r.right - r.left - 44);
+            const size_t hash = std::hash<std::wstring>{}(text) ^ (center ? 0x9E3779B97F4A7C15ull : 0);
+            if (layout && std::fabs(width - layoutW) < 0.5f && hash == layoutHash) return;
+            layoutW = width;
+            layoutHash = hash;
+            layout.Reset();
+            links.clear();
+            ComPtr<IDWriteTextFormat> format;
+            if (FAILED(g.dwrite->CreateTextFormat(L"Segoe UI Variable Text", nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL, 14.0f, L"en-us", &format)) &&
+                FAILED(g.dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                    DWRITE_FONT_STRETCH_NORMAL, 14.0f, L"en-us", &format))) return;
+            format->SetTextAlignment(center ? DWRITE_TEXT_ALIGNMENT_CENTER : DWRITE_TEXT_ALIGNMENT_LEADING);
+            format->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+            if (FAILED(g.dwrite->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), format.Get(), width, 100000.0f, &layout))) return;
+            DWRITE_TEXT_METRICS metrics{};
+            layout->GetMetrics(&metrics);
+            contentH = metrics.height;
+            if (!linkBrush) g.dc->CreateSolidColorBrush(ColorF(0.04f, 0.42f, 0.95f), &linkBrush);
+            for (const wchar_t* prefix : { L"https://", L"http://", L"www." })
+            {
+                for (size_t at = text.find(prefix); at != std::wstring::npos; at = text.find(prefix, at + 1))
+                {
+                    size_t end = at;
+                    while (end < text.size() && !iswspace(text[end]) && text[end] != L')' && text[end] != L'>' && text[end] != L'"') ++end;
+                    while (end > at && (text[end - 1] == L'.' || text[end - 1] == L',' || text[end - 1] == L';')) --end;
+                    if (end - at < 6) continue;
+                    // A shorter prefix may sit inside an address already found
+                    const auto range = std::make_pair(static_cast<UINT32>(at), static_cast<UINT32>(end - at));
+                    if (std::ranges::any_of(links, [&](const auto& l) { return range.first >= l.first && range.first < l.first + l.second; })) continue;
+                    links.push_back(range);
+                    const DWRITE_TEXT_RANGE tr{ range.first, range.second };
+                    layout->SetUnderline(TRUE, tr);
+                    layout->SetDrawingEffect(linkBrush.Get(), tr);
+                }
+            }
+        }
+        void OnClick(const float x, const float y) override
+        {
+            if (!layout) return;
+            BOOL trailing = FALSE, inside = FALSE;
+            DWRITE_HIT_TEST_METRICS metrics{};
+            layout->HitTestPoint(x - (r.left + 22), y - (r.top + 12) + scroll, &trailing, &inside, &metrics);
+            if (!inside) return;
+            for (const auto& [start, length] : links)
+                if (metrics.textPosition >= start && metrics.textPosition < start + length)
+                {
+                    std::wstring url = text.substr(start, length);
+                    if (url.rfind(L"www.", 0) == 0) url = L"https://" + url;
+                    ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                    return;
+                }
+        }
+        void Draw(Gfx& g) override
+        {
+            g.Gradient(r, 18, ColorF(1, 1, 1, 0.55f), ColorF(0.95f, 0.96f, 1.0f, 0.35f));
+            g.Stroke(r, 18, ColorF(0.2f, 0.22f, 0.35f, 0.12f), 1.4f);
+            g.Rim(r, 18, 0.7f);
+            Build(g);
+            if (!layout) return;
+            scroll = std::clamp(scroll, 0.0f, std::max(0.0f, contentH - ViewH()));
+            g.dc->PushAxisAlignedClip(D2D1::RectF(r.left + 4, r.top + 8, r.right - 4, r.bottom - 8), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            g.brush->SetColor(kInk);
+            g.dc->DrawTextLayout(D2D1::Point2F(r.left + 22, r.top + 12 - scroll), layout.Get(), g.brush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            g.dc->PopAxisAlignedClip();
+            if (contentH > ViewH())
+            {
+                const float track = r.bottom - r.top - 24, thumb = std::max(28.0f, track * ViewH() / contentH);
+                const float y = r.top + 12 + (track - thumb) * scroll / std::max(1.0f, contentH - ViewH());
+                g.Fill(D2D1::RectF(r.right - 11, y, r.right - 7, y + thumb), 2, ColorF(0.24f, 0.28f, 0.42f, 0.35f));
+            }
+        }
+    };
+
     struct GroupCard final : Widget
     {
         std::wstring text;
@@ -1674,7 +1830,7 @@ namespace
     bool SyncBase(Widget& widget, const HWND real)
     {
         bool changed = false;
-        const bool shown = (GetWindowLongPtrW(real, GWL_STYLE) & WS_VISIBLE) != 0;
+        const bool shown = IsWindowVisible(real) != FALSE;
         const bool on = IsWindowEnabled(real) != FALSE;
         if (shown != widget.visible) { widget.visible = shown; changed = true; }
         if (on != widget.enabled) { widget.enabled = on; changed = true; }
@@ -1708,8 +1864,25 @@ namespace
         int builtPage = -1;
         float scaleX = 1.3f, scaleY = 1.65f;
         float originX = 28, originY = 88, contentRight = 760;
+        HWND pageWindow = nullptr;
+        float tabBarBottom = 0;
 
         HWND Real(const int id) const { return GetDlgItem(hooks.sheet, id); }
+
+        // Rectangle of a real control in glass coordinates (re-read each frame by mirrors whose control moves)
+        D2D1_RECT_F RectOf(const HWND w, const float minH, const float minW) const
+        {
+            const float k = 96.0f / window.dpi;
+            RECT rc{};
+            GetWindowRect(w, &rc);
+            MapWindowPoints(nullptr, pageWindow, reinterpret_cast<POINT*>(&rc), 2);
+            const float x = originX + static_cast<float>(rc.left) * k * scaleX, y = originY + static_cast<float>(rc.top) * k * scaleY;
+            const float w2 = std::max(minW, static_cast<float>(rc.right - rc.left) * k * scaleX);
+            const float h = static_cast<float>(rc.bottom - rc.top) * k * scaleY;
+            const float height = std::max(minH, h);
+            const float left = std::min(x, contentRight - w2);
+            return D2D1::RectF(left, y + (h - height) / 2, left + w2, y + (h - height) / 2 + height);
+        }
 
         void BuildPage()
         {
@@ -1726,14 +1899,25 @@ namespace
             const float k = 96.0f / window.dpi;
 
             // Group cards first so they sit behind their controls
-            std::vector<HWND> children;
-            for (HWND child = GetWindow(page, GW_CHILD); child != nullptr; child = GetWindow(child, GW_HWNDNEXT)) children.push_back(child);
             const auto classOf = [](const HWND w)
             {
                 std::array<WCHAR, 32> name{};
                 GetClassNameW(w, name.data(), static_cast<int>(name.size()));
                 return std::wstring(name.data());
             };
+            // Nested dialogs (embedded pages) and tab wrappers contribute their own children
+            std::vector<HWND> children;
+            const auto collect = [&](const auto& self, const HWND parent) -> void
+            {
+                for (HWND child = GetWindow(parent, GW_CHILD); child != nullptr; child = GetWindow(child, GW_HWNDNEXT))
+                {
+                    children.push_back(child);
+                    if (const std::wstring c = classOf(child); c == L"#32770" || c == L"SysTabControl32" || FindWindowExW(child, nullptr, L"SysTabControl32", nullptr) != nullptr) self(self, child);
+                }
+            };
+            collect(collect, page);
+            pageWindow = page;
+            tabBarBottom = 0;
             const auto rectOf = [&](const HWND w, const float minH, const float minW)
             {
                 RECT rc{};
@@ -1758,6 +1942,188 @@ namespace
                 const std::wstring cls = classOf(child);
                 const LONG_PTR style = GetWindowLongPtrW(child, GWL_STYLE);
                 const int id = GetDlgCtrlID(child);
+                if (cls == L"#32770") continue;
+                // A native tab nested inside a wrapper that is mirrored as a whole is not mirrored twice
+                if (cls == L"SysTabControl32" && GetParent(child) != page && classOf(GetParent(child)) != L"#32770") continue;
+                if (const HWND nativeTab = cls == L"SysTabControl32" ? child : FindWindowExW(child, nullptr, L"SysTabControl32", nullptr); nativeTab != nullptr)
+                {
+                    // Tab wrapper: a glass tab bar that clicks the real tab strip
+                    RECT first{};
+                    SendMessageW(nativeTab, TCM_GETITEMRECT, 0, reinterpret_cast<LPARAM>(&first));
+                    D2D1_RECT_F rect = rectOf(child, 0, 0);
+                    rect.bottom = rect.top + std::max(40.0f, static_cast<float>(first.bottom + 2) * k * scaleY);
+                    tabBarBottom = std::max(tabBarBottom, rect.bottom);
+                    auto* bar = window.Add<TabBar>(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top);
+                    bar->chosen = [child, nativeTab](const int i)
+                    {
+                        RECT item{};
+                        if (!SendMessageW(nativeTab, TCM_GETITEMRECT, static_cast<WPARAM>(i), reinterpret_cast<LPARAM>(&item))) return;
+                        POINT pt{ (item.left + item.right) / 2, (item.top + item.bottom) / 2 };
+                        MapWindowPoints(nativeTab, child, &pt, 1);
+                        SendMessageW(child, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(pt.x, pt.y));
+                        SendMessageW(child, WM_LBUTTONUP, 0, MAKELPARAM(pt.x, pt.y));
+                    };
+                    bar->syncFn = [bar, child, nativeTab]
+                    {
+                        bool ch = SyncBase(*bar, child);
+                        const int count = static_cast<int>(SendMessageW(nativeTab, TCM_GETITEMCOUNT, 0, 0));
+                        std::vector<std::wstring> labels;
+                        for (int i = 0; i < count; ++i)
+                        {
+                            std::array<WCHAR, 128> text{};
+                            TCITEMW item{ .mask = TCIF_TEXT, .pszText = text.data(), .cchTextMax = static_cast<int>(text.size()) };
+                            SendMessageW(nativeTab, TCM_GETITEMW, static_cast<WPARAM>(i), reinterpret_cast<LPARAM>(&item));
+                            labels.push_back(StripMnemonic(text.data()));
+                        }
+                        const int sel = static_cast<int>(SendMessageW(nativeTab, TCM_GETCURSEL, 0, 0));
+                        if (labels != bar->tabs || sel != bar->selected) ch = true;
+                        bar->tabs = std::move(labels);
+                        bar->selected = sel;
+                        return ch;
+                    };
+                    continue;
+                }
+                if (cls.rfind(L"RichEdit", 0) == 0 || cls.rfind(L"RICHEDIT", 0) == 0)
+                {
+                    const D2D1_RECT_F rect = rectOf(child, 60, 120);
+                    auto* view = window.Add<TextView>(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top);
+                    view->center = (style & ES_CENTER) != 0;
+                    auto lastLength = std::make_shared<int>(-1);
+                    const bool inTab = classOf(GetParent(child)) == L"SysTabControl32";
+                    view->syncFn = [this, view, child, lastLength, inTab]
+                    {
+                        bool ch = SyncBase(*view, child);
+                        if (view->visible)
+                        {
+                            D2D1_RECT_F nr = RectOf(child, 60, 120);
+                            if (inTab && tabBarBottom > 0 && nr.top < tabBarBottom + 8) nr.top = tabBarBottom + 8;
+                            if (nr.left != view->r.left || nr.top != view->r.top || nr.right != view->r.right || nr.bottom != view->r.bottom)
+                            {
+                                view->r = nr;
+                                ch = true;
+                            }
+                        }
+                        const int length = GetWindowTextLengthW(child);
+                        if (length != *lastLength)
+                        {
+                            *lastLength = length;
+                            std::wstring t = WindowText(child);
+                            std::erase(t, L'\r');
+                            view->text = std::move(t);
+                            ch = true;
+                        }
+                        return ch;
+                    };
+                    continue;
+                }
+                if (cls == L"SysListView32")
+                {
+                    const D2D1_RECT_F rect = rectOf(child, 80, 120);
+                    auto* mirror = window.Add<ListMirror>(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top);
+                    mirror->chosen = [child](const int row)
+                    {
+                        ListView_SetItemState(child, row, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+                    };
+                    mirror->activated = [child, id](const int row)
+                    {
+                        NMITEMACTIVATE activate{};
+                        activate.hdr = { child, static_cast<UINT_PTR>(id), static_cast<UINT>(NM_DBLCLK) };
+                        activate.iItem = row;
+                        SendMessageW(GetParent(child), WM_NOTIFY, static_cast<WPARAM>(id), reinterpret_cast<LPARAM>(&activate));
+                    };
+                    const float sx = scaleX, hostK = k;
+                    auto lastRead = std::make_shared<ULONGLONG>(0);
+                    mirror->syncFn = [this, mirror, child, sx, hostK, lastRead]
+                    {
+                        bool ch = SyncBase(*mirror, child);
+                        if (mirror->visible)
+                        {
+                            const D2D1_RECT_F nr = RectOf(child, 80, 120);
+                            if (nr.left != mirror->r.left || nr.top != mirror->r.top || nr.right != mirror->r.right || nr.bottom != mirror->r.bottom)
+                            {
+                                mirror->r = nr;
+                                ch = true;
+                            }
+                        }
+                        const ULONGLONG now = GetTickCount64();
+                        if (now - *lastRead < 120) return ch;
+                        *lastRead = now;
+                        const HWND header = ListView_GetHeader(child);
+                        std::vector<ListMirror::Col> cols;
+                        std::vector<int> subitems;
+                        const int columnCount = header != nullptr ? Header_GetItemCount(header) : 0;
+                        for (int c = 0; c < columnCount; ++c)
+                        {
+                            RECT hr{};
+                            if (!Header_GetItemRect(header, c, &hr) || hr.right - hr.left <= 1) continue;
+                            std::array<WCHAR, 128> title{};
+                            LVCOLUMNW column{ .mask = LVCF_SUBITEM | LVCF_FMT | LVCF_TEXT, .pszText = title.data(), .cchTextMax = static_cast<int>(title.size()) };
+                            if (!ListView_GetColumn(child, c, &column)) continue;
+                            ListMirror::Col col;
+                            col.title = title.data();
+                            col.left = static_cast<float>(hr.left) * hostK * sx;
+                            col.right = static_cast<float>(hr.right) * hostK * sx;
+                            col.rightAligned = (column.fmt & LVCFMT_RIGHT) != 0;
+                            cols.push_back(std::move(col));
+                            subitems.push_back(column.iSubItem);
+                        }
+                        // Squeeze the columns into the widget when the real ones are wider than the mirror
+                        const float avail = mirror->r.right - mirror->r.left - 16;
+                        if (!cols.empty() && cols.back().right > avail)
+                        {
+                            const float factor = avail / cols.back().right;
+                            for (auto& col : cols) { col.left *= factor; col.right *= factor; }
+                        }
+                        const int count = ListView_GetItemCount(child);
+                        mirror->top = std::clamp(mirror->top, 0, std::max(0, count - mirror->Visible()));
+                        std::vector<std::vector<std::wstring>> rows;
+                        std::vector<bool> selected;
+                        for (int i = mirror->top; i < std::min(count, mirror->top + mirror->Visible()); ++i)
+                        {
+                            std::vector<std::wstring> cells;
+                            for (const int sub : subitems)
+                            {
+                                std::array<WCHAR, 260> text{};
+                                ListView_GetItemText(child, i, sub, text.data(), static_cast<int>(text.size()));
+                                cells.emplace_back(text.data());
+                            }
+                            rows.push_back(std::move(cells));
+                            selected.push_back((ListView_GetItemState(child, i, LVIS_SELECTED) & LVIS_SELECTED) != 0);
+                        }
+                        if (rows != mirror->rows || selected != mirror->selected || count != mirror->count || cols.size() != mirror->cols.size()) ch = true;
+                        mirror->rows = std::move(rows);
+                        mirror->selected = std::move(selected);
+                        mirror->cols = std::move(cols);
+                        mirror->count = count;
+                        return ch;
+                    };
+                    continue;
+                }
+                if (cls == L"Static" && (style & SS_TYPEMASK) == SS_OWNERDRAW)
+                {
+                    const D2D1_RECT_F rect = rectOf(child, 0, 0);
+                    auto* mirror = window.Add<PixelMirror>(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top);
+                    mirror->real = child;
+                    mirror->syncFn = [mirror, child] { return SyncBase(*mirror, child); };
+                    continue;
+                }
+                if (cls == L"Static" && (style & SS_TYPEMASK) == SS_CENTER)
+                {
+                    const D2D1_RECT_F rect = rectOf(child, 26, 0);
+                    auto* label = window.Add<Label>(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top);
+                    label->align = DWRITE_TEXT_ALIGNMENT_CENTER;
+                    label->size = 15;
+                    label->weight = DWRITE_FONT_WEIGHT_SEMI_BOLD;
+                    label->syncFn = [label, child]
+                    {
+                        bool ch = SyncBase(*label, child);
+                        const std::wstring t = StripMnemonic(WindowText(child));
+                        if (t != label->text) { label->text = t; ch = true; }
+                        return ch;
+                    };
+                    continue;
+                }
+                if (cls == L"Static" && (style & SS_TYPEMASK) == SS_ICON) continue;
                 if (cls == L"Button")
                 {
                     const LONG_PTR type = style & BS_TYPEMASK;
@@ -1793,7 +2159,18 @@ namespace
                         button->syncFn = [button, child, lastSwatch]
                         {
                             bool ch = SyncBase(*button, child);
-                            const std::wstring t = StripMnemonic(WindowText(child));
+                            std::wstring t = StripMnemonic(WindowText(child));
+                            if ((GetWindowLongPtrW(child, GWL_STYLE) & BS_ICON) != 0)
+                            {
+                                switch (GetDlgCtrlID(child))
+                                {
+                                case IDC_RECOVERY_PLAY: t = L"\u25B6"; break;
+                                case IDC_RECOVERY_PAUSE: t = L"\u275A\u275A"; break;
+                                case IDC_RECOVERY_STOP: t = L"\u25A0"; break;
+                                case IDC_RECOVERY_BROWSE: t = L"\u2026"; break;
+                                default: break;
+                                }
+                            }
                             if (t != button->text) { button->text = t; ch = true; }
                             if (button->hasSwatch && GetTickCount64() - *lastSwatch > 400)
                             {
@@ -2271,7 +2648,8 @@ bool GlassUi::AttachDialog(const HWND dialog, const std::wstring& caption)
         const float k = 96.0f / window.dpi;
         RECT rc{};
         GetClientRect(raw->hooks.sheet, &rc);
-        constexpr float scale = 1.3f, margin = 28;
+        constexpr float margin = 28;
+        const float scale = std::clamp(1100.0f / std::max(1.0f, static_cast<float>(rc.right) * k), 1.0f, 1.3f);
         raw->scaleX = raw->scaleY = scale;
         const float contentW = std::max(320.0f, static_cast<float>(rc.right) * k * scale);
         const float contentH = static_cast<float>(rc.bottom) * k * scale;
@@ -2284,7 +2662,27 @@ bool GlassUi::AttachDialog(const HWND dialog, const std::wstring& caption)
         const auto click = [raw](const int id) { if (const HWND c = GetDlgItem(raw->hooks.sheet, id)) SendMessageW(c, BM_CLICK, 0, 0); };
         window.escapeAction = [click] { click(IDCANCEL); };
         window.defaultAction = [click] { click(IDOK); };
-        window.frameSync = [raw] { const int before = raw->builtPage; raw->BuildPage(); return before != raw->builtPage; };
+        // Pages created or destroyed later (provider switch, tab content) rebuild the mirror
+        auto structure = std::make_shared<std::pair<ULONGLONG, size_t>>(0, 0);
+        window.frameSync = [raw, structure]
+        {
+            const ULONGLONG now = GetTickCount64();
+            if (now - structure->first > 200)
+            {
+                structure->first = now;
+                size_t sig = 1469598103934665603ull;
+                EnumChildWindows(raw->hooks.sheet, [](const HWND w, const LPARAM l)
+                {
+                    auto* h = reinterpret_cast<size_t*>(l);
+                    *h = (*h ^ reinterpret_cast<size_t>(w)) * 1099511628211ull;
+                    return TRUE;
+                }, reinterpret_cast<LPARAM>(&sig));
+                if (sig != structure->second) { structure->second = sig; raw->builtPage = -1; }
+            }
+            const int before = raw->builtPage;
+            raw->BuildPage();
+            return before != raw->builtPage;
+        };
         raw->BuildPage();
         return D2D1::SizeF(width, height);
     };

@@ -5,6 +5,7 @@
 // Distributed WITHOUT ANY WARRANTY; see LICENSE.md for details.
 
 #include "pch.h"
+#include "../GlassUi.h"
 #include "AboutDlg.h"
 
 /////////////////////////////////////////////////////////////////////////////
@@ -186,6 +187,9 @@ bool CAboutDlg::OnInitDialog()
 
     // Set initial focus to tab control
     m_tab.SetFocus();
+
+    // Glass mirror of this dialog (the dialog keeps all logic but becomes invisible)
+    GlassUi::AttachDialog(Handle(), [this] { std::array<WCHAR, 256> title{}; ::GetWindowTextW(Handle(), title.data(), 255); return std::wstring(title.data()); }());
     return false;
 }
 

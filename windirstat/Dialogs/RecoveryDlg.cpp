@@ -5,6 +5,7 @@
 // Distributed WITHOUT ANY WARRANTY; see LICENSE.md for details.
 
 #include "pch.h"
+#include "../GlassUi.h"
 #include "RecoveryDlg.h"
 #include "IconHandler.h"
 
@@ -98,6 +99,9 @@ bool RecoveryDlg::OnInitDialog()
     m_layout.OnInitDialog(true);
     SetBusy(false);
     OnSourceChanged();
+
+    // Glass mirror of this dialog (the dialog keeps all logic but becomes invisible)
+    GlassUi::AttachDialog(Handle(), [this] { std::array<WCHAR, 256> title{}; ::GetWindowTextW(Handle(), title.data(), 255); return std::wstring(title.data()); }());
     return true;
 }
 

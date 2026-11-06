@@ -5,6 +5,7 @@
 // Distributed WITHOUT ANY WARRANTY; see LICENSE.md for details.
 
 #include "pch.h"
+#include "../GlassUi.h"
 #include "Filtering.h"
 #include "SelectDrivesDlg.h"
 #include "FinderBasic.h"
@@ -378,6 +379,9 @@ bool CCloudConnectionDlg::OnInitDialog()
     CenterWindow();
     if (m_path.empty()) GetDlgItem(IDC_REMOTE_PROVIDER).SetFocus();
     else ActivePage()->FocusInput();
+
+    // Glass mirror of this dialog (the dialog keeps all logic but becomes invisible)
+    GlassUi::AttachDialog(Handle(), [this] { std::array<WCHAR, 256> title{}; ::GetWindowTextW(Handle(), title.data(), 255); return std::wstring(title.data()); }());
     return false;
 }
 
@@ -1241,6 +1245,9 @@ bool CSelectCloudDlg::OnInitDialog()
     OnSize(0, 0, 0);
     ReloadRecentTargets();
     CenterWindow();
+
+    // Glass mirror of this dialog (the dialog keeps all logic but becomes invisible)
+    GlassUi::AttachDialog(Handle(), [this] { std::array<WCHAR, 256> title{}; ::GetWindowTextW(Handle(), title.data(), 255); return std::wstring(title.data()); }());
     return false;
 }
 
