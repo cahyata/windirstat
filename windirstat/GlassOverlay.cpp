@@ -108,6 +108,8 @@ namespace
         }
         size_t lastSignature = 0;
         bool dark = false;
+        float scale = 1.0f;
+        float S(const float v) const { return v * scale; }   // 96-dpi design value -> device pixels
         ComPtr<ID3D11Device> d3d;
         ComPtr<IDXGIDevice> dxgi;
         ComPtr<IDXGISwapChain1> swap;
@@ -704,6 +706,7 @@ namespace
         for (const auto& g : layer.groups) mixRect(g);
         for (const auto& i : layer.icons) mix(static_cast<size_t>(i.enabled) | static_cast<size_t>(i.accent) << 1);
         mix(static_cast<size_t>(layer.dark));
+        mix(static_cast<size_t>(layer.scale * 100.0f));
         return h;
     }
 
@@ -796,7 +799,7 @@ namespace
         const D2D1_RECT_F headerF = rf(v.header);
         const float headerH = headerF.bottom - headerF.top;
         {
-            D2D1_RECT_F capsule = D2D1::RectF(static_cast<float>(v.client.left) + 4, headerF.top + 3, static_cast<float>(v.client.right) - 4, headerF.bottom - 3);
+            D2D1_RECT_F capsule = D2D1::RectF(static_cast<float>(v.client.left) + S(4), headerF.top + S(3), static_cast<float>(v.client.right) - S(4), headerF.bottom - S(3));
             fill(capsule, (capsule.bottom - capsule.top) / 2, v.dark ? D2D1::ColorF(1, 1, 1, 0.06f) : D2D1::ColorF(0.24f, 0.28f, 0.42f, 0.06f));
         }
         const COLORREF softText = v.dark ? RGB(176, 182, 196) : RGB(98, 104, 118);
@@ -805,7 +808,7 @@ namespace
         {
             GlassListColumn col = v.columns[ci];
             if (!v.rows.empty() && ci < v.rows.front().cells.size() && v.rows.front().cells[ci].kind == GlassCell::Kind::Bar) col.rightAligned = false;
-            const D2D1_RECT_F tr = D2D1::RectF(static_cast<float>(col.left) + (col.rightAligned ? 6.0f : 8.0f), headerF.top, static_cast<float>(col.right) - 6, headerF.bottom);
+            const D2D1_RECT_F tr = D2D1::RectF(static_cast<float>(col.left) + S(col.rightAligned ? 6.0f : 8.0f), headerF.top, static_cast<float>(col.right) - S(6), headerF.bottom);
             const float labelWidth = std::min(TextWidth(col.title, v.fontPx), tr.right - tr.left);
             // A sorted column keeps room for the chevron beside its label
             D2D1_RECT_F textRect = tr;
@@ -818,12 +821,12 @@ namespace
             if (col.sort != 0)
             {
                 const float cy = (headerF.top + headerF.bottom) * 0.5f;
-                const float cx = col.rightAligned ? std::max(static_cast<float>(col.left) + 8.0f, tr.right - labelWidth - 11.0f)
-                                                  : std::min(static_cast<float>(col.right) - 8.0f, tr.left + labelWidth + 11.0f);
-                const float tip = col.sort == 1 ? cy - 2.2f : cy + 2.2f, base = col.sort == 1 ? cy + 2.2f : cy - 2.2f;
+                const float cx = col.rightAligned ? std::max(static_cast<float>(col.left) + S(8.0f), tr.right - labelWidth - S(11.0f))
+                                                  : std::min(static_cast<float>(col.right) - S(8.0f), tr.left + labelWidth + S(11.0f));
+                const float tip = col.sort == 1 ? cy - S(2.2f) : cy + S(2.2f), base = col.sort == 1 ? cy + S(2.2f) : cy - S(2.2f);
                 brush->SetColor(color(softText));
-                dc->DrawLine(D2D1::Point2F(cx - 4, base), D2D1::Point2F(cx, tip), brush.Get(), 1.5f, roundStroke());
-                dc->DrawLine(D2D1::Point2F(cx, tip), D2D1::Point2F(cx + 4, base), brush.Get(), 1.5f, roundStroke());
+                dc->DrawLine(D2D1::Point2F(cx - S(4), base), D2D1::Point2F(cx, tip), brush.Get(), S(1.5f), roundStroke());
+                dc->DrawLine(D2D1::Point2F(cx, tip), D2D1::Point2F(cx + S(4), base), brush.Get(), S(1.5f), roundStroke());
             }
         }
         dc->PopAxisAlignedClip();
@@ -837,10 +840,10 @@ namespace
             const float top = static_cast<float>(row.top), bottom = static_cast<float>(row.bottom);
             if (bottom <= bodyTop) continue;
             if (!row.selected && !row.hot)
-                fill(D2D1::RectF(static_cast<float>(v.client.left) + 16, bottom - 0.5f, static_cast<float>(v.client.right) - 16, bottom + 0.5f), 0.5f,
+                fill(D2D1::RectF(static_cast<float>(v.client.left) + S(16), bottom - 0.5f * scale, static_cast<float>(v.client.right) - S(16), bottom + 0.5f * scale), 0.5f,
                     v.dark ? D2D1::ColorF(1, 1, 1, 0.05f) : D2D1::ColorF(0.24f, 0.28f, 0.42f, 0.06f));
             if (row.striped) fill(D2D1::RectF(static_cast<float>(v.client.left), top, static_cast<float>(v.client.right), bottom), 0, v.dark ? D2D1::ColorF(1, 1, 1, 0.025f) : D2D1::ColorF(0.24f, 0.28f, 0.42f, 0.03f));
-            const D2D1_RECT_F capsule = D2D1::RectF(static_cast<float>(v.client.left) + 5, top + 2, static_cast<float>(v.client.right) - 5, bottom - 2);
+            const D2D1_RECT_F capsule = D2D1::RectF(static_cast<float>(v.client.left) + S(5), top + S(2), static_cast<float>(v.client.right) - S(5), bottom - S(2));
             const float radius = (capsule.bottom - capsule.top) / 2 + 1;
             COLORREF textColor = v.text;
             if (row.selected)
@@ -874,14 +877,14 @@ namespace
                     const int weight = col.weight;
                     if (weight < 1) cellColor = mixColor(cellColor, cardBack, weight < 0 ? 0.54f : 0.36f);
                 }
-                float textLeft = x0 + 6, textRight = x1 - 6;
+                float textLeft = x0 + S(6), textRight = x1 - S(6);
 
                 switch (cell.kind)
                 {
                 case GlassCell::Kind::Bar:
                 {
-                    D2D1_RECT_F bar = D2D1::RectF(x0 + 2 + static_cast<float>(cell.barIndent), top + 5, x1 - 2, bottom - 5);
-                    if (bar.right - bar.left <= 4) break;
+                    D2D1_RECT_F bar = D2D1::RectF(x0 + S(2) + static_cast<float>(cell.barIndent), top + S(5), x1 - S(2), bottom - S(5));
+                    if (bar.right - bar.left <= S(4)) break;
                     const float h = bar.bottom - bar.top, r = h / 2;
                     fill(bar, r, v.dark ? D2D1::ColorF(1, 1, 1, 0.10f) : D2D1::ColorF(0.24f, 0.28f, 0.42f, 0.10f));
                     if (cell.busy)
@@ -899,15 +902,15 @@ namespace
                     const D2D1_COLOR_F share = v.dark ? D2D1::ColorF(0.30f, 0.42f, 0.66f) : D2D1::ColorF(0.72f, 0.83f, 1.0f);
                     const D2D1_COLOR_F whole = v.dark ? D2D1::ColorF(0.38f, 0.64f, 1.0f) : D2D1::ColorF(0.17f, 0.52f, 1.0f);
                     if (subtree >= 1.0f)
-                        fill(D2D1::RectF(bar.left, bar.top, bar.left + std::max(subtree, std::min(h, 6.0f)), bar.bottom), r, share);
+                        fill(D2D1::RectF(bar.left, bar.top, bar.left + std::max(subtree, std::min(h, S(6.0f))), bar.bottom), r, share);
                     if (absolute >= 1.0f)
-                        fill(D2D1::RectF(bar.left, bar.top, bar.left + std::max(absolute, std::min(h, 6.0f)), bar.bottom), r, whole);
+                        fill(D2D1::RectF(bar.left, bar.top, bar.left + std::max(absolute, std::min(h, S(6.0f))), bar.bottom), r, whole);
                     break;
                 }
                 case GlassCell::Kind::Swatch:
                 {
-                    D2D1_RECT_F chip = D2D1::RectF(x0 + 4, top + 4, x1 - 4, bottom - 4);
-                    if (chip.right - chip.left < 6) break;
+                    D2D1_RECT_F chip = D2D1::RectF(x0 + S(4), top + S(4), x1 - S(4), bottom - S(4));
+                    if (chip.right - chip.left < S(6)) break;
                     const float r = (chip.bottom - chip.top) / 2;
                     ComPtr<ID2D1RadialGradientBrush> glow;
                     ComPtr<ID2D1GradientStopCollection> stops;
@@ -924,7 +927,7 @@ namespace
                     float x = x0 + static_cast<float>(v.generalIndent);
                     if (cell.tree)
                     {
-                        x += 3;
+                        x += S(3);
                         if (cell.indent > 0)
                         {
                             x += static_cast<float>((cell.indent - 1) * v.indentStep);
@@ -935,13 +938,13 @@ namespace
                                 const float a = cell.expanded ? 0.0f : 1.0f;
                                 if (cell.expanded)
                                 {
-                                    dc->DrawLine(D2D1::Point2F(cx - 4, cy - 2), D2D1::Point2F(cx, cy + 2), brush.Get(), 1.5f, roundStroke());
-                                    dc->DrawLine(D2D1::Point2F(cx, cy + 2), D2D1::Point2F(cx + 4, cy - 2), brush.Get(), 1.5f, roundStroke());
+                                    dc->DrawLine(D2D1::Point2F(cx - S(4), cy - S(2)), D2D1::Point2F(cx, cy + S(2)), brush.Get(), S(1.5f), roundStroke());
+                                    dc->DrawLine(D2D1::Point2F(cx, cy + S(2)), D2D1::Point2F(cx + S(4), cy - S(2)), brush.Get(), S(1.5f), roundStroke());
                                 }
                                 else
                                 {
-                                    dc->DrawLine(D2D1::Point2F(cx - 2 + a * 0, cy - 4), D2D1::Point2F(cx + 2, cy), brush.Get(), 1.5f, roundStroke());
-                                    dc->DrawLine(D2D1::Point2F(cx + 2, cy), D2D1::Point2F(cx - 2, cy + 4), brush.Get(), 1.5f, roundStroke());
+                                    dc->DrawLine(D2D1::Point2F(cx - S(2) + a * 0, cy - S(4)), D2D1::Point2F(cx + S(2), cy), brush.Get(), S(1.5f), roundStroke());
+                                    dc->DrawLine(D2D1::Point2F(cx + S(2), cy), D2D1::Point2F(cx - S(2), cy + S(4)), brush.Get(), S(1.5f), roundStroke());
                                 }
                             }
                             x += rowH;
@@ -962,7 +965,7 @@ namespace
                         const float cy = (top + bottom) / 2;
                         dc->DrawBitmap(iconBitmap, D2D1::RectF(x, cy - iconPx / 2, x + iconPx, cy + iconPx / 2), 1.0f, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC);
                     }
-                    textLeft = x + iconPx + 6;
+                    textLeft = x + iconPx + S(6);
                     [[fallthrough]];
                 }
                 case GlassCell::Kind::Text:
@@ -988,10 +991,10 @@ namespace
             if (!bar->visible) continue;
             const bool vertical = bar == &v.vscroll;
             D2D1_RECT_F thumb = rf(bar->thumb);
-            if (vertical) { const float cx = (thumb.left + thumb.right) / 2; thumb.left = cx - 3; thumb.right = cx + 3; thumb.top += 2; thumb.bottom -= 2; }
-            else { const float cy = (thumb.top + thumb.bottom) / 2; thumb.top = cy - 3; thumb.bottom = cy + 3; thumb.left += 2; thumb.right -= 2; }
+            if (vertical) { const float cx = (thumb.left + thumb.right) / 2; thumb.left = cx - S(3); thumb.right = cx + S(3); thumb.top += S(2); thumb.bottom -= S(2); }
+            else { const float cy = (thumb.top + thumb.bottom) / 2; thumb.top = cy - S(3); thumb.bottom = cy + S(3); thumb.left += S(2); thumb.right -= S(2); }
             if (thumb.right - thumb.left > 1 && thumb.bottom - thumb.top > 1)
-                fill(thumb, 3, v.dark ? D2D1::ColorF(1, 1, 1, 0.30f) : D2D1::ColorF(0.24f, 0.28f, 0.42f, 0.38f));
+                fill(thumb, S(3), v.dark ? D2D1::ColorF(1, 1, 1, 0.30f) : D2D1::ColorF(0.24f, 0.28f, 0.42f, 0.38f));
         }
         dc->PopLayer();
         dc->PopAxisAlignedClip();
@@ -1017,14 +1020,14 @@ namespace
         // Track hugging the tabs
         float left = 1e9f, right = -1e9f;
         for (const auto& t : s.tabs) { left = std::min(left, static_cast<float>(t.rect.left)); right = std::max(right, static_cast<float>(t.rect.right)); }
-        const D2D1_RECT_F track = D2D1::RectF(left + 2, strip.top + 3, right - 2, strip.bottom - 3);
+        const D2D1_RECT_F track = D2D1::RectF(left + S(2), strip.top + S(3), right - S(2), strip.bottom - S(3));
         const float trackR = (track.bottom - track.top) / 2;
         brush->SetColor(s.dark ? D2D1::ColorF(1, 1, 1, 0.07f) : D2D1::ColorF(0.24f, 0.28f, 0.42f, 0.08f));
         dc->FillRoundedRectangle(D2D1::RoundedRect(track, trackR, trackR), brush.Get());
 
         for (const auto& t : s.tabs)
         {
-            const D2D1_RECT_F pill = D2D1::RectF(static_cast<float>(t.rect.left) + 3, strip.top + 5, static_cast<float>(t.rect.right) - 3, strip.bottom - 5);
+            const D2D1_RECT_F pill = D2D1::RectF(static_cast<float>(t.rect.left) + S(3), strip.top + S(5), static_cast<float>(t.rect.right) - S(3), strip.bottom - S(5));
             const float r = (pill.bottom - pill.top) / 2;
             if (t.active)
             {
@@ -1101,11 +1104,11 @@ namespace
                 return;
             }
             brush->SetColor(colorOf(m.color, 0.28f * alpha));
-            dc->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(r.left - 1, r.top - 1, r.right + 1, r.bottom + 1), radius + 1, radius + 1), brush.Get(), 5.0f);
+            dc->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(r.left - 1, r.top - 1, r.right + 1, r.bottom + 1), radius + 1, radius + 1), brush.Get(), S(5.0f));
             brush->SetColor(D2D1::ColorF(1, 1, 1, 0.95f * alpha));
-            dc->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(r.left + 1, r.top + 1, r.right - 1, r.bottom - 1), radius, radius), brush.Get(), 2.2f);
+            dc->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(r.left + 1, r.top + 1, r.right - 1, r.bottom - 1), radius, radius), brush.Get(), S(2.2f));
             brush->SetColor(colorOf(m.color, alpha));
-            dc->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(r.left + 2.6f, r.top + 2.6f, r.right - 2.6f, r.bottom - 2.6f), std::max(radius - 1.5f, 1.0f), std::max(radius - 1.5f, 1.0f)), brush.Get(), 1.6f);
+            dc->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(r.left + 2.6f, r.top + 2.6f, r.right - 2.6f, r.bottom - 2.6f), std::max(radius - 1.5f, 1.0f), std::max(radius - 1.5f, 1.0f)), brush.Get(), S(1.6f));
         };
 
         // Hover lens (under the selection outline)
@@ -1170,7 +1173,7 @@ namespace
     {
         const auto [swell, glow] = anim[bar.id];
         const float cx = static_cast<float>(bar.bar.left + bar.bar.right) * 0.5f, cy = static_cast<float>(bar.bar.top + bar.bar.bottom) * 0.5f;
-        const float length = 36.0f + 16.0f * swell, thick = 4.0f + 2.0f * swell;
+        const float length = S(36.0f + 16.0f * swell), thick = S(4.0f + 2.0f * swell);
         const D2D1_RECT_F pill = bar.vertical
             ? D2D1::RectF(cx - thick / 2, cy - length / 2, cx + thick / 2, cy + length / 2)
             : D2D1::RectF(cx - length / 2, cy - thick / 2, cx + length / 2, cy + thick / 2);
@@ -1394,6 +1397,7 @@ namespace
 
         const GlassLayer layer = provider ? provider() : GlassLayer{};
         dark = layer.dark;
+        scale = std::clamp(layer.scale, 1.0f, 4.0f);
         const std::vector<GlassRegion>& regions = layer.regions;
         animating = StepAnimation(layer.icons);
         animating |= StepRows(layer.rows);

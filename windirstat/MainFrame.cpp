@@ -566,6 +566,7 @@ int CMainFrame::OnCreate(const LPCREATESTRUCT lpCreateStruct)
     {
         GlassLayer layer;
         layer.dark = DarkMode::IsDarkModeActive();
+        layer.scale = static_cast<float>(GetWindowDpi(Handle())) / 96.0f;
         auto& regions = layer.regions;
         const auto add = [&](const HWND child, RECT rc, const int dx, const int dy, const float radius)
         {

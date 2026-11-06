@@ -56,6 +56,7 @@ struct GlassRow
 struct GlassLayer
 {
     bool dark = false;                 // dark appearance: pills, glyphs and lenses use the dark palette
+    float scale = 1.0f;                // DPI scale (1.0 = 96 dpi): decoration sizes are multiplied by it
     std::vector<RECT> groups;          // rounded pills behind each toolbar button group
     std::vector<GlassMenuBar> menuBars;
     std::vector<GlassTabStrip> tabStrips;
