@@ -515,7 +515,7 @@ public:
     CSize PreferredSize() const override
     {
         const CRect rcParent = GetParent().GetClientRect();
-        return CSize(rcParent.Width(), ::ScaleForDpi(22, m_hWnd));
+        return CSize(rcParent.Width(), ::ScaleForDpi(28, m_hWnd));
     }
 
     static void DrawPaneBorder(CDC& dc, const CRect& rect);

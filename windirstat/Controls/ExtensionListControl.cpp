@@ -390,6 +390,19 @@ void CExtensionListControl::OnItemContextMenu(CPoint point)
     }
 }
 
+// The description column grows to use the width the other columns leave free (it never shrinks the user's choice)
+void CExtensionListControl::OnSize(UINT, const int cx, int)
+{
+    CallDefaultHandler();
+    const int column = SubItemToColumn(COL_EXT_DESCRIPTION);
+    if (column < 0 || cx <= 0 || !IsColumnVisible(COL_EXT_DESCRIPTION)) return;
+    int others = 0;
+    for (int c = 0; c < m_columnCount; ++c)
+        if (c != column) others += GetColumnWidth(c);
+    if (const int wanted = cx - others - GetSystemMetrics(SM_CXVSCROLL); wanted > GetColumnWidth(column))
+        SetColumnWidth(column, wanted);
+}
+
 void CExtensionListControl::OnSearchExtension() const
 {
     if (IsSelectedAggregate()) return;

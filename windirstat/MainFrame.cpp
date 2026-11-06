@@ -696,18 +696,25 @@ int CMainFrame::OnCreate(const LPCREATESTRUCT lpCreateStruct)
         {
             LOGFONT font{};
             ::GetObjectW(GetAppFont(bar), sizeof(font), &font);
-            const int fontPx = std::max(8, std::abs(static_cast<int>(font.lfHeight)));
+            const int fontPx = std::max(8, std::abs(static_cast<int>(font.lfHeight))) * 105 / 100;
+            const bool dark = DarkMode::IsDarkModeActive();
+            const COLORREF ink = DarkMode::SystemColor(COLOR_BTNTEXT);
+            const COLORREF soft = dark ? RGB(176, 182, 196) : RGB(98, 104, 118);
             for (const auto pane : { CStatusBar::PaneId::Idle, CStatusBar::PaneId::Size, CStatusBar::PaneId::Ram })
             {
-                const CRect pr = m_wndStatusBar.GetPaneRect(pane);
-                if (pr.Width() > 20) add(bar, pr, 2, 2, 9.0f);
+                CRect pill = m_wndStatusBar.GetPaneRect(pane);
+                pill.Deflate(2, 2);
+                if (pill.Width() <= 20 || pill.Height() <= 4) continue;
+                RECT mapped = pill;
+                MapWindowPoints(bar, Handle(), reinterpret_cast<POINT*>(&mapped), 2);
+                layer.groups.push_back(mapped);
 
-                CRect text = pr;
-                text.Deflate(2 + 4, 2, 2 + 4, 2);
-                if (text.Width() <= 0 || text.Height() <= 0) continue;
+                // The path leads; size and memory step back
+                CRect text = pill;
+                text.Deflate(ScaleForDpi(12), 0);
                 RECT tr = text;
                 MapWindowPoints(bar, Handle(), reinterpret_cast<POINT*>(&tr), 2);
-                layer.texts.push_back({ tr, m_wndStatusBar.GetPaneText(pane), DarkMode::SystemColor(COLOR_BTNTEXT), fontPx });
+                layer.texts.push_back({ tr, m_wndStatusBar.GetPaneText(pane), pane == CStatusBar::PaneId::Idle ? ink : soft, fontPx });
             }
         }
         return layer;

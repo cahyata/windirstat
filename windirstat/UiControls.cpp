@@ -1120,6 +1120,7 @@ void CStatusBar::OnPaint()
     const COLORREF barFace = DarkMode::SystemColor(
         DarkMode::IsDarkModeActive() ? COLOR_MENUBAR : COLOR_BTNFACE);
     GlassTheme::PaintBackdrop(dc.Handle(), m_hWnd);
+    if (GlassOverlay::IsActive()) return; // the compositor paints the pane pills and their text
     GdiObjectSelection selectFont(&dc, GetAppFont(m_hWnd));
     dc.SetBkMode(TRANSPARENT);
 

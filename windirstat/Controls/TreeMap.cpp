@@ -69,7 +69,7 @@ PreparedColor PrepareRenderColor(const DWORD color, const double brightness, con
     const auto gray = static_cast<BYTE>((GetRValue(prepared.color)
         + GetGValue(prepared.color) + GetBValue(prepared.color)) / 3);
     prepared.color = CColorSpace::BlendColor(prepared.color, RGB(gray, gray, gray),
-        1.0 - std::clamp(saturation, 0.0, 1.0));
+        1.0 - std::clamp(saturation, 0.0, 1.0) * 0.80);
     return prepared;
 }
 
@@ -946,12 +946,40 @@ void CTreeMap::RenderLeaf(const BitmapView bitmap, const CItem* item,
 
     RenderRectangle(bitmap, rc, surface, item->TmiGetGraphColor());
 
+    // A hairline of the surface colour around each tile separates neighbours without a hard grid
+    if (std::min(rc.Width(), rc.Height()) >= 16)
+    {
+        const COLORREF edge = DarkMode::IsDarkModeActive() ? BGR(40, 32, 30) : BGR(228, 228, 230);
+        const auto soften = [edge](COLORREF& pixel)
+        {
+            constexpr int share = 15; // percent of the surface colour mixed into the edge pixel
+            COLORREF result = pixel;
+            for (int shift = 0; shift <= 16; shift += 8)
+            {
+                const int a = static_cast<int>((pixel >> shift) & 0xFF), b = static_cast<int>((edge >> shift) & 0xFF);
+                result = (result & ~(0xFFu << shift)) | (static_cast<COLORREF>((a * (100 - share) + b * share) / 100) << shift);
+            }
+            pixel = result;
+        };
+        const size_t stride = bitmap.stride;
+        for (int x = rc.left; x < rc.right; ++x)
+        {
+            soften(bitmap.bits[static_cast<size_t>(rc.top) * stride + x]);
+            soften(bitmap.bits[static_cast<size_t>(rc.bottom - 1) * stride + x]);
+        }
+        for (int y = rc.top + 1; y < rc.bottom - 1; ++y)
+        {
+            soften(bitmap.bits[static_cast<size_t>(y) * stride + rc.left]);
+            soften(bitmap.bits[static_cast<size_t>(y) * stride + rc.right - 1]);
+        }
+    }
+
     // Rounded tiles: cut the corners of larger tiles back to the surface colour
     const int minSide = std::min(rc.Width(), rc.Height());
     if (minSide >= 12)
     {
         const int r = std::clamp(minSide / 5, 3, 12);
-        const COLORREF surfaceColor = DarkMode::IsDarkModeActive() ? BGR(40, 32, 30) : BGR(238, 232, 232);
+        const COLORREF surfaceColor = DarkMode::IsDarkModeActive() ? BGR(40, 32, 30) : BGR(228, 228, 230);
         const size_t stride = bitmap.stride;
         for (int dy = 0; dy < r; ++dy)
         {
@@ -1044,6 +1072,10 @@ void CTreeMap::DrawCushion(const BitmapView bitmap, const CRect& rc, const std::
             pixel = std::max(pixel, 0.0f);
             pixel += Ia;
             assert(pixel <= 1.0f);
+            // Soft knee: the brightest area is compressed so it does not blow out to a white hot spot
+            constexpr float knee = 0.74f;
+            pixel = std::min(pixel, knee) + std::max(pixel - knee, 0.0f) * 0.38f;
+            pixel = std::min(pixel * 1.12f, 1.0f);
 
             // Now, pixel is the brightness of the pixel, 0...1.0.
             // Apply contrast.

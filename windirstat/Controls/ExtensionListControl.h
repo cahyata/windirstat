@@ -88,6 +88,7 @@ protected:
     void OnLvnDeleteItem(NMHDR* pNMHDR, LRESULT* pResult);
     void OnNMDblclk(NMHDR* pNMHDR, LRESULT* pResult);
     void OnSetFocus(WindowRef pOldWnd);
+    void OnSize(UINT nType, int cx, int cy);
     void OnLvnItemChanged(NMHDR* pNMHDR, LRESULT* pResult) const;
     void OnKeyDown(UINT nChar, UINT nRepCnt, UINT nFlags);
     void OnSearchExtension() const;
@@ -100,6 +101,7 @@ inline std::span<const RouteEntry> CExtensionListControl::Routes()
         Route::ReflectNotify<&OnLvnDeleteItem>(LVN_DELETEITEM),
         Route::ReflectNotify<&OnNMDblclk>(NM_DBLCLK),
         Route::Window<&OnSetFocus>(WM_SETFOCUS),
+        Route::Window<&OnSize>(WM_SIZE),
         Route::ReflectNotify<&OnLvnItemChanged>(LVN_ITEMCHANGED),
         Route::Command<&OnSearchExtension>(ID_EXTLIST_SEARCH_EXTENSION),
         Route::Command<&OnExcludeExtension>(ID_FILTER_EXCLUDE_ITEM),

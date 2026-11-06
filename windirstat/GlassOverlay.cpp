@@ -1070,6 +1070,12 @@ namespace
         const auto outline = [&](const D2D1_RECT_F& r, const float alpha)
         {
             const float radius = std::clamp(std::min(r.right - r.left, r.bottom - r.top) * 0.18f, 2.0f, 9.0f);
+            if (std::min(r.right - r.left, r.bottom - r.top) > 12.0f)
+            {
+                // A soft wash lifts a dull tile and ties it to the outline
+                brush->SetColor(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.16f * alpha));
+                dc->FillRoundedRectangle(D2D1::RoundedRect(r, radius, radius), brush.Get());
+            }
             if (std::min(r.right - r.left, r.bottom - r.top) <= 5.0f)
             {
                 brush->SetColor(colorOf(m.color, alpha));

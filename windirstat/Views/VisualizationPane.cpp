@@ -89,7 +89,10 @@ void CVisualizationPane::ShowVisualization(const bool show)
         return;
     }
 
-    active->MoveWindow(GetClientRect(), false);
+    CRect inset = GetClientRect();
+    inset.Deflate(ScaleForDpi(8), ScaleForDpi(8));
+    active->MoveWindow(inset, false);
+    GlassTheme::ApplyRoundedRegion(active->Handle(), ScaleForDpi(14));
     active->ShowWindow(SW_SHOW);
     active->Invalidate(false);
 }
@@ -144,5 +147,9 @@ void CVisualizationPane::OnSetFocus(WindowRef /*pOldWnd*/)
 void CVisualizationPane::OnSize(UINT /*nType*/, const int cx, const int cy)
 {
     if (CGraphView* active = GetActiveView(); active != nullptr && active->Handle())
-        active->MoveWindow(0, 0, cx, cy);
+    {
+        const int pad = ScaleForDpi(8);
+        active->MoveWindow(pad, pad, std::max(0, cx - 2 * pad), std::max(0, cy - 2 * pad));
+        GlassTheme::ApplyRoundedRegion(active->Handle(), ScaleForDpi(14));
+    }
 }
