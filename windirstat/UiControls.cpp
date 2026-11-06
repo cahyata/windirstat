@@ -1069,13 +1069,21 @@ void CToolBar::OnCustomDraw(NMHDR* pNMHDR, LRESULT* pResult) const
         const COLORREF background = dark ?
             DarkMode::SystemColor(COLOR_MENUBAR) : GetSysColor(COLOR_BTNFACE);
         GlassTheme::PaintBackdrop(dc.Handle(), m_hWnd);
-        CRect glass = rect;
-        glass.Deflate(1, 1);
-        DrawGlassPanel(dc.Handle(), glass, background, glass.Height() / 2, dark);
+        if (!GlassOverlay::IsActive()) // the compositor paints group pills instead of one long panel
+        {
+            CRect glass = rect;
+            glass.Deflate(1, 1);
+            DrawGlassPanel(dc.Handle(), glass, background, glass.Height() / 2, dark);
+        }
         *pResult = CDRF_NOTIFYITEMDRAW;
         break;
     }
     case CDDS_ITEMPREPAINT:
+        if (GlassOverlay::IsActive() && customDraw->nmcd.dwItemSpec == 0)
+        {
+            *pResult = CDRF_SKIPDEFAULT; // separators: groups are separated by space, not by a line
+            break;
+        }
         if (GlassOverlay::IsActive())
         {
             // The GPU overlay draws glyph-only buttons (with hover / press animation); text buttons stay classic
@@ -1088,7 +1096,7 @@ void CToolBar::OnCustomDraw(NMHDR* pNMHDR, LRESULT* pResult) const
             }
         }
         customDraw->clrText = DarkMode::SystemColor(COLOR_BTNTEXT);
-        *pResult = TBCDRF_USECDCOLORS | CDRF_DODEFAULT;
+        *pResult = TBCDRF_USECDCOLORS | TBCDRF_NOEDGES | TBCDRF_NOBACKGROUND | CDRF_DODEFAULT;
         break;
     default:
         *pResult = CDRF_DODEFAULT;

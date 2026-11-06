@@ -134,6 +134,15 @@ namespace
         void DrawTreeMap(const GlassTreeMap& map);
         void DrawSplitter(const GlassSplitter& bar);
         void DrawMenuBar(const GlassMenuBar& bar);
+        void DrawGroups(const std::vector<RECT>& groups);
+        void DrawToolbarLens();
+        bool StepToolbar(const GlassLayer& layer);
+        IDWriteTextFormat* GetGlyphFormat(int px);
+        std::vector<std::pair<int, ComPtr<IDWriteTextFormat>>> glyphFormats;
+        std::wstring glyphFamily;
+        bool glyphChecked = false;
+        Edges toolLens;
+        float toolAlpha = 0;
         bool StepMenuBar(const std::vector<GlassMenuBar>& bars);
         Edges menuLens;
         float menuAlpha = 0, menuStrength = 0;
@@ -556,9 +565,30 @@ namespace
 
     void Overlay::DrawIcon(const GlassIcon& icon)
     {
+        const auto [hover, press] = anim[icon.id];
+        if (icon.glyph != 0)
+        {
+            const float cx = static_cast<float>(icon.rect.left + icon.rect.right) * 0.5f, cy = static_cast<float>(icon.rect.top + icon.rect.bottom) * 0.5f;
+            const int px = std::max(12, static_cast<int>(std::lround((icon.rect.bottom - icon.rect.top) * 0.50f)));
+            if (IDWriteTextFormat* format = GetGlyphFormat(px))
+            {
+                const float scale = 1.0f + 0.12f * hover - 0.10f * press;
+                ComPtr<ID2D1SolidColorBrush> brush;
+                // Ink for available commands, a faint ink when unavailable, accent for the primary / active ones
+                const D2D1_COLOR_F ink = !icon.enabled ? D2D1::ColorF(0.13f, 0.14f, 0.19f, 0.30f)
+                    : (icon.accent || icon.checked) ? D2D1::ColorF(0.04f, 0.46f, 0.98f) : D2D1::ColorF(0.13f, 0.14f, 0.19f);
+                if (SUCCEEDED(dc->CreateSolidColorBrush(ink, &brush)))
+                {
+                    dc->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale, D2D1::Point2F(cx, cy)));
+                    const wchar_t text[2] = { icon.glyph, L'\0' };
+                    dc->DrawText(text, 1, format, D2D1::RectF(cx - px, cy - px, cx + px, cy + px), brush.Get(), D2D1_DRAW_TEXT_OPTIONS_NONE);
+                    dc->SetTransform(D2D1::Matrix3x2F::Identity());
+                    return;
+                }
+            }
+        }
         ID2D1Bitmap1* bitmap = GetIcon(icon.list, icon.index);
         if (bitmap == nullptr) return;
-        const auto [hover, press] = anim[icon.id];
         const D2D1_SIZE_F size = bitmap->GetSize();
         const float cx = static_cast<float>(icon.rect.left + icon.rect.right) * 0.5f;
         const float cy = static_cast<float>(icon.rect.top + icon.rect.bottom) * 0.5f;
@@ -654,6 +684,8 @@ namespace
         for (const auto& m : layer.treeMaps) mix(m.hash);
         for (const auto& b : layer.splitters) mix(b.hash);
         for (const auto& b : layer.menuBars) mix(b.hash);
+        for (const auto& g : layer.groups) mixRect(g);
+        for (const auto& i : layer.icons) mix(static_cast<size_t>(i.enabled) | static_cast<size_t>(i.accent) << 1);
         return h;
     }
 
@@ -1169,6 +1201,114 @@ namespace
         }
     }
 
+    // Segoe Fluent Icons (Windows 11) or Segoe MDL2 Assets (Windows 10); empty when neither is installed
+    IDWriteTextFormat* Overlay::GetGlyphFormat(const int px)
+    {
+        if (dwrite == nullptr) return nullptr;
+        if (!glyphChecked)
+        {
+            glyphChecked = true;
+            ComPtr<IDWriteFontCollection> collection;
+            if (SUCCEEDED(dwrite->GetSystemFontCollection(&collection, FALSE)))
+                for (const wchar_t* family : { L"Segoe Fluent Icons", L"Segoe MDL2 Assets" })
+                {
+                    UINT32 index = 0;
+                    BOOL exists = FALSE;
+                    if (SUCCEEDED(collection->FindFamilyName(family, &index, &exists)) && exists) { glyphFamily = family; break; }
+                }
+        }
+        if (glyphFamily.empty()) return nullptr;
+        for (const auto& [key, format] : glyphFormats) if (key == px) return format.Get();
+        ComPtr<IDWriteTextFormat> format;
+        if (FAILED(dwrite->CreateTextFormat(glyphFamily.c_str(), nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL, static_cast<float>(px), L"", &format))) return nullptr;
+        format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        glyphFormats.emplace_back(px, format);
+        return glyphFormats.back().second.Get();
+    }
+
+    // One soft pill per button group
+    void Overlay::DrawGroups(const std::vector<RECT>& groups)
+    {
+        ComPtr<ID2D1SolidColorBrush> brush;
+        if (FAILED(dc->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 1), &brush))) return;
+        for (const RECT& g : groups)
+        {
+            const D2D1_RECT_F r = D2D1::RectF(static_cast<float>(g.left), static_cast<float>(g.top), static_cast<float>(g.right), static_cast<float>(g.bottom));
+            const float radius = (r.bottom - r.top) / 2;
+            for (int i = 6; i >= 1; --i) // soft shadow
+            {
+                brush->SetColor(D2D1::ColorF(0.1f, 0.12f, 0.22f, 0.012f * static_cast<float>(7 - i)));
+                dc->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(r.left - i, r.top - i + 2, r.right + i, r.bottom + i + 2), radius + i, radius + i), brush.Get(), 1.0f);
+            }
+            ComPtr<ID2D1GradientStopCollection> stops;
+            ComPtr<ID2D1LinearGradientBrush> fill;
+            const D2D1_GRADIENT_STOP gs[] = { { 0.0f, D2D1::ColorF(1, 1, 1, 0.90f) }, { 1.0f, D2D1::ColorF(0.95f, 0.96f, 0.99f, 0.78f) } };
+            if (SUCCEEDED(dc->CreateGradientStopCollection(gs, 2, &stops)) &&
+                SUCCEEDED(dc->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties(D2D1::Point2F(0, r.top), D2D1::Point2F(0, r.bottom)), stops.Get(), &fill)))
+                dc->FillRoundedRectangle(D2D1::RoundedRect(r, radius, radius), fill.Get());
+            brush->SetColor(D2D1::ColorF(0.24f, 0.28f, 0.42f, 0.10f));
+            dc->DrawRoundedRectangle(D2D1::RoundedRect(r, radius, radius), brush.Get(), 1.0f);
+            brush->SetColor(D2D1::ColorF(1, 1, 1, 0.9f));
+            dc->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(r.left + 1, r.top + 1, r.right - 1, r.bottom - 1), radius - 1, radius - 1), brush.Get(), 1.0f);
+        }
+    }
+
+    // Lens that glides between hovered toolbar buttons
+    bool Overlay::StepToolbar(const GlassLayer& layer)
+    {
+        const GlassIcon* hot = nullptr;
+        for (const auto& icon : layer.icons) if (icon.hot) { hot = &icon; break; }
+        if (hot != nullptr)
+        {
+            RECT r = hot->rect;
+            const int side = std::min(r.right - r.left, r.bottom - r.top) - 2;
+            const int cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
+            const RECT lens{ cx - side / 2, cy - side / 2, cx + side / 2, cy + side / 2 };
+            if (toolAlpha < 0.05f) toolLens.Snap(lens);
+            toolLens.Target(lens);
+        }
+        const float target = hot != nullptr ? 1.0f : 0.0f;
+        toolAlpha += (target - toolAlpha) * 0.25f;
+        if (std::fabs(target - toolAlpha) < 0.01f) toolAlpha = target;
+        bool moving = toolAlpha != target;
+        if (toolLens.init && toolAlpha > 0.0f) { toolLens.Step(); moving |= toolLens.Moving(); }
+        return moving;
+    }
+
+    void Overlay::DrawToolbarLens()
+    {
+        if (!toolLens.init || toolAlpha <= 0.01f) return;
+        ComPtr<ID2D1SolidColorBrush> brush;
+        if (FAILED(dc->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 1), &brush))) return;
+        const D2D1_RECT_F r = toolLens.Rect();
+        const float radius = std::min((r.bottom - r.top) / 2, 12.0f), a = toolAlpha;
+        brush->SetColor(D2D1::ColorF(0.24f, 0.30f, 0.52f, 0.10f * a));
+        dc->FillRoundedRectangle(D2D1::RoundedRect(r, radius, radius), brush.Get());
+        ComPtr<ID2D1RoundedRectangleGeometry> shape;
+        ComPtr<ID2D1GradientStopCollection> glowStops, rimStops;
+        ComPtr<ID2D1RadialGradientBrush> glow, rimLight;
+        const D2D1_POINT_2F light = D2D1::Point2F(std::clamp(curX, r.left, r.right), std::clamp(curY, r.top, r.bottom));
+        const float reach = std::max(r.right - r.left, 70.0f) * 0.8f;
+        const D2D1_GRADIENT_STOP glowGradient[] = { { 0.0f, D2D1::ColorF(1, 1, 1, 0.85f * a) }, { 0.5f, D2D1::ColorF(1, 1, 1, 0.25f * a) }, { 1.0f, D2D1::ColorF(1, 1, 1, 0.0f) } };
+        const D2D1_GRADIENT_STOP rimGradient[] = { { 0.0f, D2D1::ColorF(1, 1, 1, 1.0f * a) }, { 1.0f, D2D1::ColorF(1, 1, 1, 0.1f * a) } };
+        if (SUCCEEDED(factory->CreateRoundedRectangleGeometry(D2D1::RoundedRect(r, radius, radius), &shape)) &&
+            SUCCEEDED(dc->CreateGradientStopCollection(glowGradient, 3, &glowStops)) &&
+            SUCCEEDED(dc->CreateGradientStopCollection(rimGradient, 2, &rimStops)) &&
+            SUCCEEDED(dc->CreateRadialGradientBrush(D2D1::RadialGradientBrushProperties(light, D2D1::Point2F(0, 0), reach, reach), glowStops.Get(), &glow)) &&
+            SUCCEEDED(dc->CreateRadialGradientBrush(D2D1::RadialGradientBrushProperties(light, D2D1::Point2F(0, 0), reach * 1.2f, reach * 1.2f), rimStops.Get(), &rimLight)))
+        {
+            dc->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(), shape.Get()), nullptr);
+            dc->FillRectangle(r, glow.Get());
+            dc->PopLayer();
+            dc->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(r.left + 0.8f, r.top + 0.8f, r.right - 0.8f, r.bottom - 0.8f), radius, radius), rimLight.Get(), 1.6f);
+        }
+        brush->SetColor(D2D1::ColorF(0.2f, 0.22f, 0.35f, 0.09f * a));
+        dc->DrawRoundedRectangle(D2D1::RoundedRect(r, radius, radius), brush.Get(), 1.0f);
+    }
+
     void Overlay::Render()
     {
         if (failed || dc == nullptr || IsIconic(window) || !IsWindowVisible(window)) return;
@@ -1185,6 +1325,7 @@ namespace
         for (const auto& m : layer.treeMaps) animating |= StepTreeMap(m);
         animating |= StepSplitters(layer.splitters);
         animating |= StepMenuBar(layer.menuBars);
+        animating |= StepToolbar(layer);
         if (layer.treeMaps.empty()) { selectAlpha = hoverAlpha = 0; }
         const size_t signature = Signature(layer);
         const bool layerChanged = signature != lastSignature;
@@ -1210,6 +1351,7 @@ namespace
         const HDC source = GetDC(window);
         dc->BeginDraw();
         dc->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
+        DrawGroups(layer.groups);
         if (source != nullptr) for (const auto& region : regions) DrawRegion(region, source, curX, curY);
         for (const auto& list : layer.lists) DrawList(*list);
         for (const auto& strip : layer.tabStrips) DrawTabStrip(strip);
@@ -1226,6 +1368,7 @@ namespace
             if (source != nullptr && row.selected) DrawRegion({ row.rect, row.radius }, source, curX, curY);
             dc->PopAxisAlignedClip();
         }
+        DrawToolbarLens();
         for (const auto& icon : layer.icons) DrawIcon(icon);
         for (const auto& text : layer.texts) DrawLabel(text);
         const HRESULT hr = dc->EndDraw();

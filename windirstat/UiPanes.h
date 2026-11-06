@@ -316,7 +316,7 @@ public:
 
     bool Create(CFrameWnd* parent)
     {
-        constexpr DWORD style = WS_CHILD | WS_VISIBLE | TBSTYLE_FLAT | TBSTYLE_TOOLTIPS | TBSTYLE_LIST |
+        constexpr DWORD style = WS_CHILD | WS_VISIBLE | TBSTYLE_TOOLTIPS | TBSTYLE_LIST |
             CCS_NORESIZE | CCS_NOPARENTALIGN | CCS_NODIVIDER | TBSTYLE_TRANSPARENT;
         const CRect rect(0, 0, 0, 0);
         if (!CreateEx(0, TOOLBARCLASSNAMEW, nullptr, style, rect, parent, WDS_TOOLBAR_ID)) return false;
@@ -338,7 +338,7 @@ public:
     {
         TBBUTTON b{};
         b.fsStyle = BTNS_SEP;
-        b.iBitmap = MulDiv(m_imageSize, 8, 20);
+        b.iBitmap = MulDiv(m_imageSize, 20, 20);
         SendNativeMessage(TB_INSERTBUTTONW, GetButtonCount(), &b);
     }
     void AddButton(const CToolBarButton& btn)

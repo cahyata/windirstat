@@ -486,6 +486,38 @@ static bool ApplyGlassBackdrop(const HWND hWnd)
     return SUCCEEDED(DwmSetWindowAttribute(hWnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop)));
 }
 
+// Toolbar commands as Segoe Fluent Icons glyphs (the same code points exist in Segoe MDL2 Assets on Windows 10)
+static wchar_t ToolbarGlyph(const UINT id)
+{
+    switch (id)
+    {
+    case ID_FILE_SELECT: return 0xE838;             // folder
+    case ID_SCAN_RESUME: return 0xE768;             // play
+    case ID_SCAN_SUSPEND: return 0xE769;            // pause
+    case ID_SCAN_STOP: return 0xE71A;               // stop
+    case ID_REFRESH_ALL: return 0xE72C;             // refresh
+    case ID_REFRESH_SELECTED: return 0xE895;        // sync
+    case ID_SEARCH: return 0xE721;                  // search
+    case ID_FILTER: return 0xE71C;                  // filter
+    case ID_CLEANUP_OPEN_SELECTED: return 0xE8A7;   // open
+    case ID_CLEANUP_EXPLORER_SELECT: return 0xE8B7; // folder in explorer
+    case ID_EDIT_COPY_CLIPBOARD: return 0xE8C8;     // copy
+    case ID_CLEANUP_OPEN_IN_CONSOLE: return 0xE756; // command prompt
+    case ID_CLEANUP_PROPERTIES: return 0xE946;      // info
+    case ID_CLEANUP_DELETE_BIN: return 0xE74D;      // delete
+    case ID_CLEANUP_DELETE: return 0xE711;          // permanent delete
+    case ID_TREEMAP_ZOOMIN: return 0xE8A3;          // zoom in
+    case ID_TREEMAP_ZOOMOUT: return 0xE71F;         // zoom out
+    case ID_VIEW_WINDOW_LAYOUT: return 0xE80A;      // layout grid
+    case ID_CONFIGURE: return 0xE713;               // settings
+    case ID_HELP_MANUAL: return 0xE897;             // help
+    case ID_WATCHER_START: return 0xE768;
+    case ID_WATCHER_PAUSE: return 0xE769;
+    case ID_WATCHER_CLEAR: return 0xE74D;
+    default: return 0;
+    }
+}
+
 int CMainFrame::OnCreate(const LPCREATESTRUCT lpCreateStruct)
 {
     if (CFrameWnd::OnCreate(lpCreateStruct) == -1)
@@ -543,40 +575,47 @@ int CMainFrame::OnCreate(const LPCREATESTRUCT lpCreateStruct)
         };
         if (const HWND bar = m_wndToolBar.Handle(); ::IsWindow(bar) && ::IsWindowVisible(bar))
         {
-            RECT rc{};
-            ::GetClientRect(bar, &rc);
-            add(bar, rc, 1, 1, static_cast<float>(rc.bottom - rc.top) * 0.5f);
-
-            // Glass lens on the toolbar button under the cursor
+            RECT client{};
+            ::GetClientRect(bar, &client);
             const LRESULT hot = ::SendMessageW(bar, TB_GETHOTITEM, 0, 0);
-            if (hot >= 0)
-            {
-                RECT button{};
-                if (::SendMessageW(bar, TB_GETITEMRECT, static_cast<WPARAM>(hot), reinterpret_cast<LPARAM>(&button)))
-                {
-                    // Lens hugs the icon: a centred square a little larger than the glyph
-                    const int side = std::min<int>(button.right - button.left, button.bottom - button.top) - ScaleForDpi(2);
-                    const int cx = (button.left + button.right) / 2, cy = (button.top + button.bottom) / 2;
-                    const RECT lens{ cx - side / 2, cy - side / 2, cx + side / 2, cy + side / 2 };
-                    add(bar, lens, 0, 0, 8.0f);
-                }
-            }
-
-            // Glyph-only buttons are drawn by the overlay (the classic toolbar skips them)
             const int count = static_cast<int>(::SendMessageW(bar, TB_BUTTONCOUNT, 0, 0));
+            const int padX = ScaleForDpi(3), padY = ScaleForDpi(2);
+
+            // Buttons between two separators form one pill; glyph buttons are drawn by the overlay
+            RECT group{ 0, 0, 0, 0 };
+            bool open = false;
+            const auto flush = [&]
+            {
+                if (open)
+                {
+                    RECT pill{ group.left - padX, group.top - padY, group.right + padX, group.bottom + padY };
+                    ::MapWindowPoints(bar, Handle(), reinterpret_cast<POINT*>(&pill), 2);
+                    layer.groups.push_back(pill);
+                }
+                open = false;
+            };
             for (int i = 0; i < count; ++i)
             {
                 TBBUTTON b{};
                 if (!::SendMessageW(bar, TB_GETBUTTON, static_cast<WPARAM>(i), reinterpret_cast<LPARAM>(&b))) continue;
-                if ((b.fsStyle & BTNS_SEP) || (b.fsState & TBSTATE_HIDDEN) || b.iBitmap == I_IMAGENONE || b.idCommand == 0) continue;
+                if (b.fsState & TBSTATE_HIDDEN) continue;
+                if (b.fsStyle & BTNS_SEP) { flush(); continue; }
                 RECT r{};
                 if (!::SendMessageW(bar, TB_GETITEMRECT, static_cast<WPARAM>(i), reinterpret_cast<LPARAM>(&r))) continue;
-                if (r.right > rc.right || r.left < 0) continue; // clipped
+                if (r.right > client.right || r.left < 0) continue; // clipped
+                if (!open) { group = r; open = true; }
+                else { group.left = std::min(group.left, r.left); group.right = std::max(group.right, r.right); group.top = std::min(group.top, r.top); group.bottom = std::max(group.bottom, r.bottom); }
+                if (b.iBitmap == I_IMAGENONE || b.idCommand == 0) continue;
                 MapWindowPoints(bar, Handle(), reinterpret_cast<POINT*>(&r), 2);
                 const bool enabled = (b.fsState & TBSTATE_ENABLED) != 0;
-                layer.icons.push_back({ r, m_wndToolBar.GetImageList(!enabled), b.iBitmap, b.idCommand,
-                    enabled && hot == i, enabled && (b.fsState & TBSTATE_PRESSED) != 0, (b.fsState & TBSTATE_CHECKED) != 0 });
+                GlassIcon icon{ r, m_wndToolBar.GetImageList(!enabled), b.iBitmap, b.idCommand,
+                    enabled && hot == i, enabled && (b.fsState & TBSTATE_PRESSED) != 0, (b.fsState & TBSTATE_CHECKED) != 0 };
+                icon.glyph = ToolbarGlyph(static_cast<UINT>(b.idCommand));
+                icon.enabled = enabled;
+                icon.accent = b.idCommand == ID_FILE_SELECT || (b.fsState & TBSTATE_CHECKED) != 0;
+                layer.icons.push_back(icon);
             }
+            flush();
         }
         // Menu bar labels and hover lens are painted by the compositor
         for (CMenuBar* menuBar : CMenuBar::Live())

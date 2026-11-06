@@ -27,6 +27,9 @@ struct GlassIcon
     bool hot;           // cursor is over the button
     bool pressed;       // button is held down
     bool checked;       // toggled on
+    wchar_t glyph = 0;  // Segoe Fluent Icons code point; 0 draws the image list bitmap instead
+    bool enabled = true;
+    bool accent = false;// primary action: tinted with the accent colour
 };
 
 // A line of text drawn with DirectWrite.
@@ -52,6 +55,7 @@ struct GlassRow
 
 struct GlassLayer
 {
+    std::vector<RECT> groups;          // rounded pills behind each toolbar button group
     std::vector<GlassMenuBar> menuBars;
     std::vector<GlassTabStrip> tabStrips;
     std::vector<GlassSplitter> splitters;
