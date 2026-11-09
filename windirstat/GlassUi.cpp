@@ -3359,3 +3359,201 @@ bool GlassUi::TrackMenu(const HWND owner, const HMENU menu, const POINT screen, 
     if (session.result != 0 && postCommand) PostMessageW(owner, WM_COMMAND, MAKEWPARAM(session.result, 0), 0);
     return true;
 }
+
+// ---------------------------------------------------------------------------------------------
+//  Glass tooltips. The classic tooltip controls keep running all of their logic (timing, tools, text callbacks) but are
+//  made fully transparent; a glass window mirrors their text and position instead.
+// ---------------------------------------------------------------------------------------------
+namespace
+{
+    LRESULT CALLBACK TipProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+
+    struct TipWindow
+    {
+        GlassWindow gw;
+        HWND source = nullptr;               // classic tooltip being mirrored
+        std::wstring text;
+        RECT sourceRect{};
+        float width = 0, height = 0;         // DIPs
+        ULONGLONG born = 0;
+        bool failed = false;
+
+        static constexpr float kFont = 13.0f, kPadX = 12.0f, kPadY = 8.0f, kRadius = 9.0f;
+
+        bool Ensure(const HWND like)
+        {
+            if (failed) return false;
+            const float dpi = static_cast<float>(GetWindowDpi(like));
+            if (gw.hwnd == nullptr)
+            {
+                static ATOM s_atom = 0;
+                if (s_atom == 0)
+                {
+                    WNDCLASSEXW wc{ sizeof(wc) };
+                    wc.style = CS_DROPSHADOW;
+                    wc.lpfnWndProc = TipProc;
+                    wc.hInstance = GetModuleHandleW(nullptr);
+                    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+                    wc.lpszClassName = L"WdsGlassTip";
+                    s_atom = RegisterClassExW(&wc);
+                    if (s_atom == 0) { failed = true; return false; }
+                }
+                gw.dpi = dpi;
+                gw.hwnd = CreateWindowExW(kExNoRedirectionBitmap | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
+                    L"WdsGlassTip", nullptr, WS_POPUP, 0, 0, 8, 8, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+                if (gw.hwnd == nullptr) { failed = true; return false; }
+                const MARGINS margins{ -1, -1, -1, -1 };
+                DwmExtendFrameIntoClientArea(gw.hwnd, &margins);
+                const int backdrop = 3; // DWMSBT_TRANSIENTWINDOW (acrylic)
+                DwmSetWindowAttribute(gw.hwnd, 38, &backdrop, sizeof(backdrop));
+                const DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
+                DwmSetWindowAttribute(gw.hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
+                if (!gw.Init()) { DestroyWindow(gw.hwnd); gw.hwnd = nullptr; failed = true; return false; }
+            }
+            const bool dark = DarkMode::IsDarkModeActive();
+            if (dark != gw.dark)
+            {
+                gw.dark = dark;
+                gw.gfx.surfaceBoost = dark ? 1.55f : 1.0f;
+                const BOOL immersive = dark;
+                DwmSetWindowAttribute(gw.hwnd, 20, &immersive, sizeof(immersive));
+            }
+            if (dpi != gw.dpi) { gw.dpi = dpi; gw.BindTarget(); }
+            return true;
+        }
+
+        // Reads the text the classic tooltip is about to show (callback texts are resolved by the control itself)
+        static std::wstring ReadText(const HWND tip)
+        {
+            TOOLINFOW current{};
+            current.cbSize = sizeof(current);
+            if (!SendMessageW(tip, TTM_GETCURRENTTOOLW, 0, reinterpret_cast<LPARAM>(&current))) return {};
+            std::array<wchar_t, 2048> buffer{};
+            TOOLINFOW query{};
+            query.cbSize = sizeof(query);
+            query.hwnd = current.hwnd;
+            query.uId = current.uId;
+            query.lpszText = buffer.data();
+            SendMessageW(tip, TTM_GETTEXTW, static_cast<WPARAM>(buffer.size() - 1), reinterpret_cast<LPARAM>(&query));
+            return buffer.data();
+        }
+
+        static void SetClassicVisible(const HWND tip, const bool visible)
+        {
+            const LONG_PTR ex = GetWindowLongPtrW(tip, GWL_EXSTYLE);
+            if (!visible && (ex & WS_EX_LAYERED) == 0) SetWindowLongPtrW(tip, GWL_EXSTYLE, ex | WS_EX_LAYERED);
+            if ((GetWindowLongPtrW(tip, GWL_EXSTYLE) & WS_EX_LAYERED) != 0)
+                SetLayeredWindowAttributes(tip, 0, visible ? 255 : 0, LWA_ALPHA);
+        }
+
+        void Hide()
+        {
+            if (gw.hwnd != nullptr) { KillTimer(gw.hwnd, 1); ShowWindow(gw.hwnd, SW_HIDE); }
+            source = nullptr;
+            text.clear();
+        }
+
+        void Sync(const HWND tip)
+        {
+            std::wstring now = ReadText(tip);
+            if (now.empty() || !Ensure(tip))
+            {
+                // Nothing to mirror: let the classic tooltip show as usual
+                SetClassicVisible(tip, true);
+                if (source == tip) Hide();
+                return;
+            }
+            RECT rect{};
+            GetWindowRect(tip, &rect);
+            if (source == tip && now == text && rect.left == sourceRect.left && rect.top == sourceRect.top) return;
+            const bool fresh = source != tip || now != text || !IsWindowVisible(gw.hwnd);
+            source = tip;
+            text = std::move(now);
+            sourceRect = rect;
+            SetClassicVisible(tip, false);
+
+            // Measure (DIPs). Honour the control's maximum width so long hints wrap the same way.
+            const float s = gw.dpi / 96.0f;
+            const int maxPx = static_cast<int>(SendMessageW(tip, TTM_GETMAXTIPWIDTH, 0, 0));
+            const float wrapAt = maxPx > 0 ? static_cast<float>(maxPx) / s : 560.0f;
+            const auto layout = gw.gfx.WrapLayout(text, kFont, wrapAt, 10000.0f);
+            if (!layout) { SetClassicVisible(tip, true); Hide(); return; }
+            DWRITE_TEXT_METRICS metrics{};
+            layout->GetMetrics(&metrics);
+            width = std::ceil(metrics.widthIncludingTrailingWhitespace) + 2 * kPadX;
+            height = std::ceil(metrics.height) + 2 * kPadY;
+
+            const int wPx = static_cast<int>(std::ceil(width * s)), hPx = static_cast<int>(std::ceil(height * s));
+            MONITORINFO mi{ sizeof(mi) };
+            GetMonitorInfoW(MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST), &mi);
+            int x = rect.left, y = rect.top;
+            if (x + wPx > mi.rcWork.right) x = mi.rcWork.right - wPx;
+            if (y + hPx > mi.rcWork.bottom) y = std::max<int>(mi.rcWork.top, rect.top - hPx - static_cast<int>(24 * s));
+            x = std::max<int>(mi.rcWork.left, x);
+            y = std::max<int>(mi.rcWork.top, y);
+            SetWindowPos(gw.hwnd, HWND_TOPMOST, x, y, wPx, hPx, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            gw.Resize();
+            if (fresh) born = GetTickCount64();
+            SetTimer(gw.hwnd, 1, 16, nullptr);
+            Render();
+        }
+
+        void Render()
+        {
+            if (!gw.swap || !gw.gfx.dc || source == nullptr) return;
+            Gfx& g = gw.gfx;
+            const float appear = std::clamp(static_cast<float>(GetTickCount64() - born) / 120.0f, 0.0f, 1.0f);
+            gw.BeginScene();
+            g.dc->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(), nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                D2D1::IdentityMatrix(), appear), nullptr);
+            const D2D1_RECT_F body = D2D1::RectF(0, 0, width, height);
+            g.Gradient(body, kRadius, ColorF(1, 1, 1, std::min(1.0f, 0.70f * g.surfaceBoost)), ColorF(0.96f, 0.97f, 1.0f, std::min(1.0f, 0.54f * g.surfaceBoost)));
+            g.Rim(body, kRadius, 0.7f);
+            g.WrapText(text, D2D1::RectF(kPadX, kPadY, width - kPadX + 2, height - kPadY), kFont, kInk);
+            g.dc->PopLayer();
+            if (gw.EndScene()) gw.swap->Present(0, 0);
+            if (appear >= 1.0f) KillTimer(gw.hwnd, 1);
+        }
+    };
+
+    TipWindow& Tip()
+    {
+        static auto* tip = new TipWindow; // lives for the whole process
+        return *tip;
+    }
+
+    LRESULT CALLBACK TipProc(const HWND hwnd, const UINT message, const WPARAM wParam, const LPARAM lParam)
+    {
+        switch (message)
+        {
+        case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
+        case WM_NCHITTEST: return HTTRANSPARENT;
+        case WM_ERASEBKGND: return 1;
+        case WM_PAINT: ValidateRect(hwnd, nullptr); return 0;
+        case WM_TIMER: if (wParam == 1) Tip().Render(); return 0;
+        default: return DefWindowProcW(hwnd, message, wParam, lParam);
+        }
+    }
+
+    void CALLBACK TipEvent(HWINEVENTHOOK, const DWORD event, const HWND hwnd, const LONG idObject, LONG, DWORD, DWORD)
+    {
+        if (idObject != OBJID_WINDOW || hwnd == nullptr || hwnd == Tip().gw.hwnd) return;
+        std::array<wchar_t, 32> name{};
+        if (GetClassNameW(hwnd, name.data(), static_cast<int>(name.size())) == 0 || wcscmp(name.data(), TOOLTIPS_CLASSW) != 0) return;
+        if (event == EVENT_OBJECT_HIDE)
+        {
+            if (Tip().source == hwnd) Tip().Hide();
+            return;
+        }
+        if (IsWindowVisible(hwnd)) Tip().Sync(hwnd);
+    }
+}
+
+void GlassUi::InstallTooltips()
+{
+    static HWINEVENTHOOK hook = nullptr;
+    if (hook != nullptr) return;
+    // SHOW .. NAMECHANGE covers show, hide, move and text changes of the classic tooltip
+    hook = SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_NAMECHANGE, nullptr, TipEvent,
+        GetCurrentProcessId(), GetCurrentThreadId(), WINEVENT_OUTOFCONTEXT);
+}

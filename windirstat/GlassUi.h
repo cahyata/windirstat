@@ -63,4 +63,7 @@ namespace GlassUi
     // through `command` (TPM_RETURNCMD behaviour).
     bool TrackMenu(HWND owner, HMENU menu, POINT screen, int initIndex, const std::function<int(POINT)>& barHit, int& switchTo,
         UINT align = 0, bool postCommand = true, UINT* command = nullptr);
+
+    // Mirrors every classic tooltip of the calling thread as a glass window (the classic ones keep running, invisible).
+    void InstallTooltips();
 }

@@ -956,7 +956,8 @@ namespace
                         {
                             const float cy = (top + bottom) / 2;
                             const wchar_t text[2] = { cell.glyph, L'\0' };
-                            brush->SetColor(row.selected ? color(v.highlightText) : D2D1::ColorF(0.92f, 0.58f, 0.04f));
+                            brush->SetColor(row.selected ? color(v.highlightText)
+                                : cell.glyphColor != CLR_NONE ? color(cell.glyphColor) : D2D1::ColorF(0.92f, 0.58f, 0.04f));
                             dc->DrawText(text, 1, gf, D2D1::RectF(x, cy - iconPx, x + iconPx, cy + iconPx), brush.Get(), D2D1_DRAW_TEXT_OPTIONS_NONE);
                         }
                     }

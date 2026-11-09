@@ -6,6 +6,7 @@
 
 #include "pch.h"
 #include "GlassOverlay.h"
+#include "GlassUi.h"
 #include "VisualizationPane.h"
 #include "TreeMapView.h"
 #include "FileTabbedView.h"
@@ -560,6 +561,8 @@ int CMainFrame::OnCreate(const LPCREATESTRUCT lpCreateStruct)
     m_glassActive = ApplyGlassBackdrop(Handle());
     SetLayoutMargin(ScaleForDpi(10));
     GlassTheme::StyleMainFrame(Handle());
+
+    GlassUi::InstallTooltips();
 
     // GPU liquid-glass layer over the toolbar and status bar panes
     GlassOverlay::Attach(Handle(), [this]

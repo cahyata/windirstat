@@ -7,6 +7,7 @@
 #include "pch.h"
 #include "ExtensionView.h"
 #include "ExtensionListControl.h"
+#include "GlassGlyphs.h"
 #include "FileSearchControl.h"
 #include "Filtering.h"
 #include "Options.h"
@@ -32,6 +33,13 @@ void CExtensionListControl::CListItem::GetGlassCell(const int subitem, GlassCell
     {
         cell.kind = GlassCell::Kind::Label;
         cell.icon = GetIcon();
+        if (!m_aggregate)
+        {
+            const GlassGlyphs::Glyph glyph = GlassGlyphs::ForExtension(m_extension);
+            cell.glyph = glyph.code;
+            cell.glyphColor = glyph.color;
+            cell.icon = nullptr;
+        }
     }
     else if (subitem == COL_EXT_COLOR)
     {

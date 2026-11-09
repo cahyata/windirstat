@@ -6,6 +6,7 @@
 
 #include "pch.h"
 #include "Item.h"
+#include "GlassGlyphs.h"
 
 static constexpr wchar_t AsciiLower(const wchar_t value) noexcept
 {
@@ -49,6 +50,29 @@ static void FreeXxHashState(XXH3_state_t* state) noexcept { XXH3_freeState(state
 void CItem::GetGlassCell(const int subitem, GlassCell& cell)
 {
     CTreeListItem::GetGlassCell(subitem, cell);
+    if (subitem == COL_NAME)
+    {
+        // Uniform glyphs instead of the shell's per-type icons; links and mount points keep their own icons
+        const auto* icons = GetIconHandler();
+        const bool linkIcon = cell.icon != nullptr && icons != nullptr &&
+            (cell.icon == icons->GetJunctionImage() || cell.icon == icons->GetSymbolicLinkImage() ||
+             cell.icon == icons->GetJunctionProtectedImage() || cell.icon == icons->GetMountPointImage());
+        if (cell.glyph == 0 && !linkIcon)
+        {
+            GlassGlyphs::Glyph glyph{};
+            if (IsTypeOrFlag(IT_FILE)) glyph = GlassGlyphs::ForExtension(GetExtension());
+            else if (IsTypeOrFlag(IT_DIRECTORY)) glyph = GlassGlyphs::Folder;
+            else if (IsTypeOrFlag(IT_DRIVE)) glyph = GlassGlyphs::Drive;
+            else if (IsTypeOrFlag(IT_MYCOMPUTER)) glyph = GlassGlyphs::Computer;
+            if (glyph.code != 0)
+            {
+                cell.glyph = glyph.code;
+                cell.glyphColor = glyph.color;
+                cell.icon = nullptr;
+            }
+        }
+        return;
+    }
     if (subitem != COL_SIZE_PROPORTION) return;
 
     // Mirrors DrawSubItem(): while reading, the cell shows progress (or text); otherwise the proportion bar

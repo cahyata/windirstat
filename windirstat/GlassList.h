@@ -26,6 +26,7 @@ struct GlassCell
     // Label
     HICON icon = nullptr;
     wchar_t glyph = 0;               // Segoe Fluent glyph drawn instead of the icon (e.g. scan warning)
+    COLORREF glyphColor = CLR_NONE;  // glyph tint; CLR_NONE keeps the warning orange
     bool tree = false;               // draw the tree indentation and expander
     bool hasChildren = false;
     bool expanded = false;
