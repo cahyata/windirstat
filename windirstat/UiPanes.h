@@ -8,10 +8,13 @@
 
 #include "UiApplication.h"
 #include "GlassList.h"
+#include "GlassOverlay.h"
 
 // "Liquid glass" theme helpers (aurora backdrop shared by all windows of the main frame)
 namespace GlassTheme
 {
+    // Marks the top-level window whose backdrop is real acrylic: its backdrop is painted black (see through)
+    void SetAcrylicRoot(HWND root);
     void PaintBackdrop(HDC hdc, HWND window);
     // Paints the backdrop for `area` (client coordinates of `window`) into hdc at (0,0)
     void PaintBackdropAt(HDC hdc, HWND window, const RECT& area);
@@ -206,6 +209,12 @@ inline void CSplitterWnd::OnMouseMove(UINT, const CPoint pt)
 {
     if (!m_bTracking) return;
 
+    // Each step re-lays out the panes and repaints, which costs more than the mouse takes to send the next move.
+    // Skip a move when a newer one is already queued, so the drag always works on the latest position instead of
+    // replaying a backlog in short jumps.
+    MSG newer{};
+    if (::PeekMessageW(&newer, m_hWnd, WM_MOUSEMOVE, WM_MOUSEMOVE, PM_NOREMOVE)) return;
+
     const CRect rcWork = WorkRect();
     const int trackPos = IsVertical() ?
         std::clamp(static_cast<int>(pt.x - rcWork.left - m_nTrackOffset), 0, std::max(0, rcWork.Width() - SplitterSize)) :
@@ -217,6 +226,11 @@ inline void CSplitterWnd::OnMouseMove(UINT, const CPoint pt)
     if (!std::exchange(m_bTrackMoved, true)) OnTrackingChanged(true);
     m_paneSizes[0] = trackPos;
     UpdateLayout();
+    // WM_PAINT is low priority and starves under the flood of mouse moves, which left the old card frames in the
+    // gap until the drag ended. Repaint the splitter (gap, card shadows and rims) right away.
+    ::RedrawWindow(m_hWnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
+    // Repaint the glass overlay in step with the new pane geometry (it is composed separately from the GDI panes)
+    GlassOverlay::Flush(::GetAncestor(m_hWnd, GA_ROOT));
 }
 inline void CSplitterWnd::OnLButtonUp(UINT, CPoint) { if (m_bTracking) StopTracking(true); }
 inline void CSplitterWnd::OnCaptureChanged(WindowRef pWnd)

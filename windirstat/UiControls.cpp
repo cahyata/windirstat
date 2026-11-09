@@ -133,6 +133,10 @@ void GlassTheme::FillRounded(HDC hdc, const RECT& rect, const int radius, const 
     g.FillPath(&brush, &path);
 }
 
+static HWND s_acrylicRoot = nullptr;
+
+void GlassTheme::SetAcrylicRoot(const HWND root) { s_acrylicRoot = root; }
+
 void GlassTheme::PaintBackdropAt(HDC hdc, HWND window, const RECT& area)
 {
     const HWND root = GetAncestor(window, GA_ROOT);
@@ -140,6 +144,12 @@ void GlassTheme::PaintBackdropAt(HDC hdc, HWND window, const RECT& area)
     if (root == nullptr || !GetClientRect(root, &rootRc)) return;
     const int w = rc.right - rc.left, h = rc.bottom - rc.top;
     if (w <= 0 || h <= 0 || rootRc.right <= 0 || rootRc.bottom <= 0) return;
+    if (root == s_acrylicRoot)
+    {
+        // Black over an extended DWM frame is see-through: the acrylic backdrop shows instead of the aurora image
+        PatBlt(hdc, 0, 0, w, h, BLACKNESS);
+        return;
+    }
     MapWindowPoints(window, root, reinterpret_cast<POINT*>(&rc), 2);
     rc.top = std::clamp<LONG>(rc.top, 0, rootRc.bottom - 1);
     rc.left = std::clamp<LONG>(rc.left, 0, rootRc.right - 1);
@@ -353,9 +363,13 @@ void GlassTheme::StyleMainFrame(const HWND frame)
     // Title bar takes the colour of the glass backdrop so caption and content read as one surface
     const COLORREF caption = dark ? RGB(21, 23, 29) : RGB(236, 238, 243);
     const COLORREF text = dark ? RGB(236, 238, 244) : RGB(34, 38, 48);
-    DwmSetWindowAttribute(frame, 35 /*DWMWA_CAPTION_COLOR*/, &caption, sizeof(caption));
+    // With acrylic the caption and border stay system-default so the backdrop runs through the title bar
+    const COLORREF automatic = 0xFFFFFFFF; // DWMWA_COLOR_DEFAULT
+    const bool acrylic = frame == s_acrylicRoot;
+    const COLORREF captionColor = acrylic ? automatic : caption;
+    DwmSetWindowAttribute(frame, 35 /*DWMWA_CAPTION_COLOR*/, &captionColor, sizeof(captionColor));
     DwmSetWindowAttribute(frame, 36 /*DWMWA_TEXT_COLOR*/, &text, sizeof(text));
-    DwmSetWindowAttribute(frame, 34 /*DWMWA_BORDER_COLOR*/, &caption, sizeof(caption));
+    DwmSetWindowAttribute(frame, 34 /*DWMWA_BORDER_COLOR*/, &captionColor, sizeof(captionColor));
     SetWindowSubclass(frame, MainFrameSubclass, 0x6C70, 0);
     if (!dark)
         EnumChildWindows(frame, [](const HWND window, LPARAM) -> BOOL

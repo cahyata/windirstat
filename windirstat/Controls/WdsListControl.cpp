@@ -656,6 +656,11 @@ bool CWdsListControl::BuildGlassView(const HWND frame, std::shared_ptr<const Gla
     mix(static_cast<size_t>(listRc.left)); mix(static_cast<size_t>(listRc.top));
     mix(static_cast<size_t>(listRc.right)); mix(static_cast<size_t>(listRc.bottom));
     mix(static_cast<size_t>(first)); mix(static_cast<size_t>(count));
+    // The header window slides with a horizontal scroll while its item rectangles stay put, so its own position and
+    // the scroll offset must be part of the fingerprint or the columns would lag behind the scrolling list
+    mix(static_cast<size_t>(headerRc.left)); mix(static_cast<size_t>(headerRc.right));
+    mix(static_cast<size_t>(headerRc.top)); mix(static_cast<size_t>(headerRc.bottom));
+    mix(static_cast<size_t>(::GetScrollPos(list, SB_HORZ)));
     mix(static_cast<size_t>(::GetFocus() == list)); mix(static_cast<size_t>(DarkMode::IsDarkModeActive()));
     for (int c = 0; c < columnCount; ++c)
     {

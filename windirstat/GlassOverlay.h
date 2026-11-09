@@ -78,4 +78,8 @@ namespace GlassOverlay
 
     // True once an overlay is attached and drawing: classic controls then skip painting what the overlay draws.
     bool IsActive();
+
+    // Draws the overlay of `window` right now (no-op when none is attached). Layout changes that move panes under the
+    // overlay call this so the overlay and the classic controls are composed in the same frame instead of lagging apart.
+    void Flush(HWND window);
 }

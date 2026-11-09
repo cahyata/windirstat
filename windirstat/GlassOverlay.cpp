@@ -92,6 +92,10 @@ namespace
     struct Overlay
     {
         HWND window{};
+        // WM_TIMER is the lowest-priority message and starves while the window is flooded with scroll input and
+        // repaints. A timer-queue timer posts a render message instead (posted messages outrank input and paint).
+        std::atomic<bool> pumpPending{ false };
+        HANDLE pumpTimer = nullptr;
         GlassOverlay::LayerProvider provider;
         ComPtr<IDWriteFactory> dwrite;
         std::vector<std::pair<std::pair<HIMAGELIST, int>, ComPtr<ID2D1Bitmap1>>> icons;
@@ -343,6 +347,19 @@ namespace
         const int cw = cap.right - cap.left, ch = cap.bottom - cap.top;
         if (!EnsureDib(cw, ch)) return;
         BitBlt(memDc, 0, 0, cw, ch, source, cap.left, cap.top, SRCCOPY);
+
+        // Where the window shows the acrylic backdrop, GDI holds pure black (see-through). Refract a neutral frosted
+        // tone there instead of black, so rims and tints do not turn dark.
+        {
+            const UINT32 neutral = dark ? 0x001C1E24u : 0x00E9E9EEu;
+            auto* pixels = static_cast<UINT32*>(bits);
+            for (int y = 0; y < ch; ++y)
+            {
+                UINT32* row = pixels + static_cast<size_t>(y) * static_cast<size_t>(dibW);
+                for (int x = 0; x < cw; ++x)
+                    if ((row[x] & 0x00FFFFFFu) == 0) row[x] = neutral;
+            }
+        }
 
         const D2D1_BITMAP_PROPERTIES1 srcProps = D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_NONE,
             D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE), 96.0f, 96.0f);
@@ -1407,8 +1424,12 @@ namespace
         curX += (tx - curX) * 0.30f;
         curY += (ty - curY) * 0.30f;
         if (!moving) { curX = tx; curY = ty; }
+        // Wheel, touchpad and key input scroll or select without moving the cursor, so recent input also keeps the
+        // compositor at full rate (covers the classic list's own scroll animation too)
+        LASTINPUTINFO input{ sizeof(input) };
+        const bool recentInput = GetLastInputInfo(&input) && static_cast<DWORD>(GetTickCount() - input.dwTime) < 600;
         bool periodic = false;
-        if (!moving && !animating)
+        if (!moving && !animating && !recentInput)
         {
             if ((++idle % 6) != 0) return;
             periodic = true;
@@ -1474,10 +1495,25 @@ namespace
         swap->Present(0, 0);
     }
 
+    constexpr UINT kRenderMessage = WM_APP + 0x47;
+
+    // Runs on the timer-queue thread: only posts (at most one pending message), all drawing stays on the UI thread
+    VOID CALLBACK PumpCallback(PVOID parameter, BOOLEAN)
+    {
+        auto* overlay = static_cast<Overlay*>(parameter);
+        if (!overlay->pumpPending.exchange(true)) PostMessageW(overlay->window, kRenderMessage, 0, 0);
+    }
+
     LRESULT CALLBACK OverlaySubclass(const HWND hWnd, const UINT message, const WPARAM wParam, const LPARAM lParam,
         const UINT_PTR id, const DWORD_PTR ref)
     {
         auto* overlay = reinterpret_cast<Overlay*>(ref);
+        if (message == kRenderMessage)
+        {
+            overlay->pumpPending.store(false);
+            overlay->Render();
+            return 0;
+        }
         if (message == WM_TIMER && wParam == kTimerId)
         {
             overlay->Render();
@@ -1486,6 +1522,11 @@ namespace
         if (message == WM_NCDESTROY)
         {
             KillTimer(hWnd, kTimerId);
+            if (overlay->pumpTimer != nullptr)
+            {
+                DeleteTimerQueueTimer(nullptr, overlay->pumpTimer, INVALID_HANDLE_VALUE); // waits for a running callback
+                overlay->pumpTimer = nullptr;
+            }
             --g_active;
             RemoveWindowSubclass(hWnd, OverlaySubclass, id);
             delete overlay;
@@ -1497,6 +1538,13 @@ namespace
 
 bool GlassOverlay::IsActive() { return g_active.load() > 0; }
 
+void GlassOverlay::Flush(const HWND window)
+{
+    DWORD_PTR ref = 0;
+    if (window != nullptr && GetWindowSubclass(window, OverlaySubclass, kSubclassId, &ref) && ref != 0)
+        reinterpret_cast<Overlay*>(ref)->Render();
+}
+
 bool GlassOverlay::Attach(const HWND window, LayerProvider provider)
 {
     auto overlay = std::make_unique<Overlay>();
@@ -1505,8 +1553,9 @@ bool GlassOverlay::Attach(const HWND window, LayerProvider provider)
     if (!overlay->Init()) return false;
     if (!SetWindowSubclass(window, OverlaySubclass, kSubclassId, reinterpret_cast<DWORD_PTR>(overlay.get())))
         return false;
-    overlay.release();
+    Overlay* raw = overlay.release();
     ++g_active;
-    SetTimer(window, kTimerId, kFrameMs, nullptr);
+    SetTimer(window, kTimerId, kFrameMs, nullptr); // fallback; the posted pump normally drives the frames
+    CreateTimerQueueTimer(&raw->pumpTimer, nullptr, PumpCallback, raw, kFrameMs, kFrameMs, WT_EXECUTEINTIMERTHREAD);
     return true;
 }

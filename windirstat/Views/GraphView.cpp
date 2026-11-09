@@ -134,6 +134,17 @@ void CGraphView::OnDraw(CDC* pDC)
 
         GdiObjectSelection selectBitmap(&memoryDc, &m_bitmap);
         RenderVisualization(&memoryDc, rect);
+
+        // The renderers write RGB into a 32 bpp DIB and leave alpha at 0. Over the acrylic / Mica frame DWM reads that
+        // as see-through, so make the cached frame opaque.
+        DIBSECTION section{};
+        if (::GetObjectW(m_bitmap.m_hObject, sizeof(section), &section) == sizeof(section) &&
+            section.dsBm.bmBits != nullptr && section.dsBm.bmBitsPixel == 32)
+        {
+            auto* pixels = static_cast<UINT32*>(section.dsBm.bmBits);
+            const size_t count = static_cast<size_t>(section.dsBm.bmWidth) * static_cast<size_t>(std::abs(section.dsBm.bmHeight));
+            for (size_t i = 0; i < count; ++i) pixels[i] |= 0xFF000000u;
+        }
         m_dimmed.Reset();
         m_dimmedSize = { 0, 0 };
     }

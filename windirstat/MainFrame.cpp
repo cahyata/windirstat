@@ -481,10 +481,17 @@ static bool ApplyGlassBackdrop(const HWND hWnd)
     if (rtlGetVersion == nullptr || rtlGetVersion(reinterpret_cast<PRTL_OSVERSIONINFOW>(&info)) != 0 ||
         info.dwBuildNumber < 22621) return false;
 
-    const DWM_SYSTEMBACKDROP_TYPE backdrop = DWMSBT_NONE; // caption colour is set explicitly
+    // Real Mica (wallpaper-tinted, soft) behind the whole client area. GDI paints black wherever the backdrop should show
+    // through (see GlassTheme::PaintBackdropAt); the panes and cards are repainted opaque or frosted by the compositor.
+    // DWMSBT_TRANSIENTWINDOW would give the stronger blurred acrylic instead.
+    const DWM_SYSTEMBACKDROP_TYPE backdrop = DWMSBT_MAINWINDOW;
     const DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
     DwmSetWindowAttribute(hWnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
-    return SUCCEEDED(DwmSetWindowAttribute(hWnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop)));
+    if (FAILED(DwmSetWindowAttribute(hWnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop)))) return false;
+    const MARGINS margins{ -1, -1, -1, -1 };
+    if (FAILED(DwmExtendFrameIntoClientArea(hWnd, &margins))) return false;
+    GlassTheme::SetAcrylicRoot(hWnd);
+    return true;
 }
 
 // Toolbar commands as Segoe Fluent Icons glyphs (the same code points exist in Segoe MDL2 Assets on Windows 10)
