@@ -44,9 +44,6 @@ void CWinDirStatModel::ClearScanState()
     // Stop watchers
     if (CFileWatcherControl::Get() != nullptr) CFileWatcherControl::Get()->StopMonitoring();
 
-    // Discard pending top-list entries that still point into the old tree.
-    if (CFileTopControl::Get() != nullptr) CFileTopControl::Get()->ClearPendingItems();
-
     // Clean out icon queue
     GetIconHandler()->ClearAsyncShellInfoQueue();
 
@@ -199,12 +196,6 @@ bool CWinDirStatModel::OpenLoadedScan(CItem* loadedRoot)
 
     m_rootItem = loadedRoot;
     m_zoomItem = m_rootItem;
-
-    // Populate the Largest Files list from the pre-built tree
-    for (CItem* item : CItem::GetItemsRecursive({ m_rootItem }))
-    {
-        CFileTopControl::Get()->ProcessTop(item);
-    }
 
     NotifyPanes(MODEL_CHANGE_NEW_ROOT);
     StartScanningEngine({});
@@ -621,7 +612,12 @@ void CWinDirStatModel::DeletePhysicalItems(const std::vector<CItem*>& items, con
                     return;
                 }
 
-                RemoveDirectory(item->GetPathLong().c_str());
+                // RemoveDirectory rejects read-only directories even when empty.
+                const std::wstring path = item->GetPathLong();
+                if (item->GetAttributes() != INVALID_FILE_ATTRIBUTES &&
+                    (item->GetAttributes() & FILE_ATTRIBUTE_READONLY) != 0)
+                    SetFileAttributes(path.c_str(), item->GetAttributes() & ~FILE_ATTRIBUTE_READONLY);
+                RemoveDirectory(path.c_str());
                 pdlg->Increment();
             }
 
@@ -642,7 +638,7 @@ void CWinDirStatModel::DeletePhysicalItems(const std::vector<CItem*>& items, con
         DWORD flags = FOFX_SHOWELEVATIONPROMPT | FOF_NOCONFIRMATION;
         if (toTrashBin) flags |= FOFX_ADDUNDORECORD | FOFX_RECYCLEONDELETE;
 
-        const auto doDelete = [&](const HWND hwnd, const DWORD opFlags)
+        const auto doDelete = [&](const HWND hwnd, const DWORD opFlags, const CProgressDlg* progress)
         {
             // Initialize COM on whichever thread executes the shell operation
             const ComApartmentScope com;
@@ -657,7 +653,8 @@ void CWinDirStatModel::DeletePhysicalItems(const std::vector<CItem*>& items, con
             // Queue the complete shell selection and execute it as one deletion
             const CComPtr<IShellItemArray> psia = CreateShellItemArray(itemsToDelete, true);
             if (psia == nullptr || FAILED(fileOperation->DeleteItems(psia))) return;
-            const HRESULT res = fileOperation->PerformOperations();
+            const HRESULT res = progress == nullptr ? fileOperation->PerformOperations() :
+                PerformCancellableOperations(fileOperation, opFlags, [progress] { return progress->IsCancelled(); });
             if (res != S_OK) VTRACE(L"File Operation Failed: {}", TranslateError(res));
         };
 
@@ -666,12 +663,12 @@ void CWinDirStatModel::DeletePhysicalItems(const std::vector<CItem*>& items, con
             // The shell pumps messages while deleting, so block commands against the stale model until refreshed
             const HWND mainWindow = GetMainWindowHandle();
             EnableWindow(mainWindow, false);
-            doDelete(mainWindow, flags);
+            doDelete(mainWindow, flags, nullptr);
             EnableWindow(mainWindow, true);
         }
         else
             CProgressDlg(0, CProgressDlg::Flags::None, GetMainWindow(), [&](const CProgressDlg* pdlg)
-                { doDelete(*pdlg, flags | FOF_NO_UI); }).ShowModal();
+                { doDelete(*pdlg, flags | FOF_NO_UI, pdlg); }).ShowModal();
     }
 
     // Create a set of recycler directories to refresh

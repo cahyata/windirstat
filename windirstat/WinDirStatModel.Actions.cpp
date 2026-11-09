@@ -603,7 +603,7 @@ void CWinDirStatModel::OnCleanupMoveTo()
         if (psia == nullptr || FAILED(fileOperation->MoveItems(psia, destShellItem))) return;
 
         // Do all moves
-        const HRESULT res = fileOperation->PerformOperations();
+        const HRESULT res = PerformCancellableOperations(fileOperation, flags, [pdlg] { return pdlg->IsCancelled(); });
         if (res != S_OK) VTRACE(L"File Operation Failed: {}", TranslateError(res));
     }).ShowModal();
 
@@ -1094,7 +1094,7 @@ void CWinDirStatModel::StartScanningEngine(std::vector<CItem*> items)
 
     // Remove items in UI thread so we do not conflict with the timer updates
     CFileDupeControl::Get()->RemoveItems(items);
-    CFileTopControl::Get()->RemoveItems(items);
+    CFileTopControl::Get()->UpdateItems(items);
     CFileSearchControl::Get()->RemoveItems(items);
 
     using VisualInfo = struct { bool wasExpanded; bool isSelected; };
@@ -1688,6 +1688,9 @@ void CWinDirStatModel::OnCleanupRemoveEmpty()
             const DWORD typeAttributes = attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT);
             if (attributes == INVALID_FILE_ATTRIBUTES || typeAttributes != FILE_ATTRIBUTE_DIRECTORY) continue;
 
+            // RemoveDirectory rejects read-only directories even when empty.
+            if ((attributes & FILE_ATTRIBUTE_READONLY) != 0 &&
+                !SetFileAttributes(path.c_str(), attributes & ~FILE_ATTRIBUTE_READONLY)) continue;
             if (RemoveDirectory(path.c_str()))
             {
                 deletedCount++;
