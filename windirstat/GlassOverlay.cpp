@@ -1395,6 +1395,24 @@ namespace
         if (rc.right != width || rc.bottom != height) Resize(rc.right, rc.bottom);
         if (failed) return;
 
+        // Smooth the cursor. While nothing moves or animates, skip the (costly) layer snapshot
+        // on most ticks and only wake at ~10 Hz so live content under the glass stays fresh.
+        POINT cursor{};
+        GetCursorPos(&cursor);
+        ScreenToClient(window, &cursor);
+        const auto tx = static_cast<float>(cursor.x), ty = static_cast<float>(cursor.y);
+        if (!seeded) { curX = tx; curY = ty; seeded = true; }
+        const bool moving = std::fabs(tx - curX) > 0.4f || std::fabs(ty - curY) > 0.4f;
+        curX += (tx - curX) * 0.30f;
+        curY += (ty - curY) * 0.30f;
+        if (!moving) { curX = tx; curY = ty; }
+        bool periodic = false;
+        if (!moving && !animating)
+        {
+            if ((++idle % 6) != 0) return;
+            periodic = true;
+        }
+
         const GlassLayer layer = provider ? provider() : GlassLayer{};
         dark = layer.dark;
         scale = std::clamp(layer.scale, 1.0f, 4.0f);
@@ -1409,21 +1427,11 @@ namespace
         const size_t signature = Signature(layer);
         const bool layerChanged = signature != lastSignature;
 
-        // Smooth the cursor; render at full rate only while it moves near glass, otherwise ~10 Hz
-        POINT cursor{};
-        GetCursorPos(&cursor);
-        ScreenToClient(window, &cursor);
-        const auto tx = static_cast<float>(cursor.x), ty = static_cast<float>(cursor.y);
-        if (!seeded) { curX = tx; curY = ty; seeded = true; }
-        const bool moving = std::fabs(tx - curX) > 0.4f || std::fabs(ty - curY) > 0.4f;
-        curX += (tx - curX) * 0.30f;
-        curY += (ty - curY) * 0.30f;
-        if (!moving) { curX = tx; curY = ty; }
         bool nearGlass = false;
         for (const auto& r : regions)
             if (cursor.x > r.rect.left - 90 && cursor.x < r.rect.right + 90 &&
                 cursor.y > r.rect.top - 90 && cursor.y < r.rect.bottom + 90) { nearGlass = true; break; }
-        if (!(moving && nearGlass) && !animating && !layerChanged && (++idle % 6) != 0) return;
+        if (!(moving && nearGlass) && !animating && !layerChanged && !periodic) return;
         if ((moving && nearGlass) || animating || layerChanged) idle = 0;
         lastSignature = signature;
 

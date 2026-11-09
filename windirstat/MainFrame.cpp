@@ -1005,7 +1005,9 @@ void CMainFrame::OnTimer(const UINT_PTR nIDEvent)
     }
 
     // UI updates that do need to be processed frequently
-    if (!CWinDirStatModel::Get()->IsRootDone() && !IsScanSuspended())
+    // Only while a scan is actually in flight; with no root loaded there is nothing to refresh
+    if (CWinDirStatModel::Get()->GetRootItem() != nullptr &&
+        !CWinDirStatModel::Get()->IsRootDone() && !IsScanSuspended())
     {
         // Update the visual progress at the bottom of the screen
         UpdateProgress();
